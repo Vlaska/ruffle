@@ -1050,8 +1050,12 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         // TODO(Herschel): SWF19: "If A is zero, the result NaN, Infinity, or -Infinity is pushed to the in SWF 5 and later.
         // In SWF 4, the result is the string #ERROR#.""
         // Seems to be untrue for SWF v4, I get 1.#INF.
+        if a == 0.0 && self.swf_version() < 5 {
+            self.context.avm1.push(Value::from("#ERROR#"));
+        } else {
+            self.context.avm1.push(b / a);
+        }
 
-        self.context.avm1.push(b / a);
         Ok(FrameControl::Continue)
     }
 
