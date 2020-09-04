@@ -989,7 +989,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         // In SWF 4, the result is the string #ERROR#.""
         // Seems to be untrue for SWF v4, I get 1.#INF.
         if a == 0.0 && self.swf_version() < 5 {
-            self.context.avm1.push(Value::from("#ERROR#"));
+            self.context.avm1.push(AvmString::new(self.context.gc_context, "#ERROR#"));
         } else {
             self.context.avm1.push(b / a);
         }
