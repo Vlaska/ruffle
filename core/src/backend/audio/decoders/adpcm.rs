@@ -16,55 +16,6 @@ pub struct AdpcmDecoder<R: Read> {
     right_step: i32,
 }
 
-const SAMPLE_DELTA_CALCULATOR: [fn(i32, i32) -> i32; 4] = [
-    |step: i32, magnitude: i32| {
-        let mut delta = step >> 1;
-        if magnitude & 1 != 0 {
-            delta += step;
-        };
-        delta
-    },
-    |step: i32, magnitude: i32| {
-        let mut delta = step >> 2;
-        if magnitude & 1 != 0 {
-            delta += step >> 1;
-        }
-        if magnitude & 2 != 0 {
-            delta += step;
-        };
-        delta
-    },
-    |step: i32, magnitude: i32| {
-        let mut delta = step >> 3;
-        if magnitude & 1 != 0 {
-            delta += step >> 2
-        }
-        if magnitude & 2 != 0 {
-            delta += step >> 1
-        }
-        if magnitude & 4 != 0 {
-            delta += step
-        };
-        delta
-    },
-    |step: i32, magnitude: i32| {
-        let mut delta = step >> 4;
-        if magnitude & 1 != 0 {
-            delta += step >> 3
-        }
-        if magnitude & 2 != 0 {
-            delta += step >> 2
-        }
-        if magnitude & 4 != 0 {
-            delta += step >> 1
-        }
-        if magnitude & 8 != 0 {
-            delta += step
-        };
-        delta
-    },
-];
-
 impl<R: Read> AdpcmDecoder<R> {
     const INDEX_TABLE: [&'static [i16]; 4] = [
         &[-1, 2],
@@ -80,6 +31,59 @@ impl<R: Read> AdpcmDecoder<R> {
         2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845,
         8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086,
         29794, 32767,
+    ];
+
+    const SAMPLE_DELTA_CALCULATOR: [fn(i32, i32) -> i32; 4] = [
+        // 2 bits
+        |step: i32, magnitude: i32| {
+            let mut delta = step >> 1;
+            if magnitude & 1 != 0 {
+                delta += step;
+            };
+            delta
+        },
+        // 3 bits
+        |step: i32, magnitude: i32| {
+            let mut delta = step >> 2;
+            if magnitude & 1 != 0 {
+                delta += step >> 1;
+            }
+            if magnitude & 2 != 0 {
+                delta += step;
+            };
+            delta
+        },
+        // 4 bits
+        |step: i32, magnitude: i32| {
+            let mut delta = step >> 3;
+            if magnitude & 1 != 0 {
+                delta += step >> 2
+            }
+            if magnitude & 2 != 0 {
+                delta += step >> 1
+            }
+            if magnitude & 4 != 0 {
+                delta += step
+            };
+            delta
+        },
+        // 5 bits
+        |step: i32, magnitude: i32| {
+            let mut delta = step >> 4;
+            if magnitude & 1 != 0 {
+                delta += step >> 3
+            }
+            if magnitude & 2 != 0 {
+                delta += step >> 2
+            }
+            if magnitude & 4 != 0 {
+                delta += step >> 1
+            }
+            if magnitude & 8 != 0 {
+                delta += step
+            };
+            delta
+        },
     ];
 
     pub fn new(inner: R, is_stereo: bool, sample_rate: u16) -> Self {
@@ -173,7 +177,8 @@ impl<R: Read> AdpcmDecoder<R> {
 
             let sign_mask = 1 << (self.bits_per_sample - 1);
             let magnitude = data & !sign_mask;
-            let delta = SAMPLE_DELTA_CALCULATOR[self.bits_per_sample - 2](self.right_step, magnitude);
+            let delta =
+                SAMPLE_DELTA_CALCULATOR[self.bits_per_sample - 2](self.right_step, magnitude);
 
             if (data & sign_mask) != 0 {
                 self.right_sample -= delta;
