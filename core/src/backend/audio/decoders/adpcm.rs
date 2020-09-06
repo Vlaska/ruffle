@@ -139,7 +139,8 @@ impl<R: Read> AdpcmDecoder<R> {
         // TODO(Herschel): Other implementations use some bit-tricks for this.
         let sign_mask = 1 << (self.bits_per_sample - 1);
         let magnitude = data & !sign_mask;
-        let delta = Self::SAMPLE_DELTA_CALCULATOR[self.bits_per_sample - 2](self.left_step, magnitude);
+        let delta =
+            Self::SAMPLE_DELTA_CALCULATOR[self.bits_per_sample - 2](self.left_step, magnitude);
         // Iterative version
         // let mut delta = self.left_step >> (self.bits_per_sample - 1);
         // let mut counter = (self.bits_per_sample - 2) as i8;
