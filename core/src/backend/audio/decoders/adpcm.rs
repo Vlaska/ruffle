@@ -50,38 +50,38 @@ impl<R: Read> AdpcmDecoder<R> {
             }
             if magnitude & 2 != 0 {
                 delta += step;
-            };
+            }
             delta
         },
         // 4 bits
         |step: i32, magnitude: i32| {
             let mut delta = step >> 3;
             if magnitude & 1 != 0 {
-                delta += step >> 2
+                delta += step >> 2;
             }
             if magnitude & 2 != 0 {
-                delta += step >> 1
+                delta += step >> 1;
             }
             if magnitude & 4 != 0 {
-                delta += step
-            };
+                delta += step;
+            }
             delta
         },
         // 5 bits
         |step: i32, magnitude: i32| {
             let mut delta = step >> 4;
             if magnitude & 1 != 0 {
-                delta += step >> 3
+                delta += step >> 3;
             }
             if magnitude & 2 != 0 {
-                delta += step >> 2
+                delta += step >> 2;
             }
             if magnitude & 4 != 0 {
-                delta += step >> 1
+                delta += step >> 1;
             }
             if magnitude & 8 != 0 {
-                delta += step
-            };
+                delta += step;
+            }
             delta
         },
     ];
