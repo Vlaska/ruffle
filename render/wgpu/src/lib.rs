@@ -20,8 +20,9 @@ use crate::pipelines::Pipelines;
 use crate::shapes::{Draw, DrawType, GradientUniforms, IncompleteDrawType, Mesh};
 use crate::target::{RenderTarget, RenderTargetFrame, SwapChainTarget};
 use crate::utils::{
-    build_view_matrix, create_buffer_with_data, gradient_spread_mode_index,
-    ruffle_path_to_lyon_path, swf_bitmap_to_gl_matrix, swf_to_gl_matrix,
+    build_view_matrix, create_buffer_with_data, format_list, get_backend_names,
+    gradient_spread_mode_index, ruffle_path_to_lyon_path, swf_bitmap_to_gl_matrix,
+    swf_to_gl_matrix,
 };
 use ruffle_core::color_transform::ColorTransform;
 use std::mem::replace;
@@ -35,6 +36,12 @@ mod utils;
 mod pipelines;
 mod shapes;
 pub mod target;
+
+#[cfg(feature = "clap")]
+pub mod clap;
+
+use ruffle_core::swf::{Matrix, Twips};
+pub use wgpu;
 
 pub struct WgpuRenderBackend<T: RenderTarget> {
     device: Rc<wgpu::Device>,
@@ -121,26 +128,44 @@ unsafe impl Pod for GPUVertex {}
 unsafe impl Zeroable for GPUVertex {}
 
 impl WgpuRenderBackend<SwapChainTarget> {
-    pub fn for_window<W: HasRawWindowHandle>(window: &W, size: (u32, u32)) -> Result<Self, Error> {
-        let surface = wgpu::Surface::create(window);
+    pub fn for_window<W: HasRawWindowHandle>(
+        window: &W,
+        size: (u32, u32),
+        backend: wgpu::BackendBit,
+        power_preference: wgpu::PowerPreference,
+    ) -> Result<Self, Error> {
+        if wgpu::BackendBit::SECONDARY.contains(backend) {
+            log::warn!(
+                "{} graphics backend support may not be fully supported.",
+                format_list(&get_backend_names(backend), "and")
+            );
+        }
 
-        let adapter = block_on(wgpu::Adapter::request(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-            },
-            wgpu::BackendBit::PRIMARY,
-        ))
+        let instance = wgpu::Instance::new(backend);
+
+        let surface = unsafe { instance.create_surface(window) };
+
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference,
+            compatible_surface: Some(&surface),
+        }))
         .ok_or_else(|| {
-            "Ruffle requires hardware acceleration, but no compatible graphics device was found."
+            let names = get_backend_names(backend);
+            if names.is_empty() {
+                "Ruffle requires hardware acceleration, but no compatible graphics device was found (no backend provided?)".to_string()
+            } else {
+                format!("Ruffle requires hardware acceleration, but no compatible graphics device was found supporting {}", format_list(&names, "or"))
+            }
         })?;
 
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            extensions: wgpu::Extensions {
-                anisotropic_filtering: false,
+        let (device, queue) = block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                features: Default::default(),
+                limits: wgpu::Limits::default(),
+                shader_validation: false,
             },
-            limits: wgpu::Limits::default(),
-        }));
+            None,
+        ))?;
 
         let target = SwapChainTarget::new(surface, size, &device);
         Self::new(Rc::new(device), Rc::new(queue), target)
@@ -164,20 +189,18 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let frame_buffer = device.create_texture(&wgpu::TextureDescriptor {
             label: frame_buffer_label.as_deref(),
             size: extent,
-            array_layer_count: 1,
             mip_level_count: 1,
             sample_count: msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: target.format(),
             usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
         });
-        let frame_buffer_view = frame_buffer.create_default_view();
+        let frame_buffer_view = frame_buffer.create_view(&Default::default());
 
         let depth_label = create_debug_label!("Depth texture");
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: depth_label.as_deref(),
             size: extent,
-            array_layer_count: 1,
             mip_level_count: 1,
             sample_count: msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
@@ -190,7 +213,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             label: register_encoder_label.as_deref(),
         });
 
-        let depth_texture_view = depth_texture.create_default_view();
+        let depth_texture_view = depth_texture.create_view(&Default::default());
 
         let (quad_vbo, quad_ibo, quad_tex_transforms) = create_quad_buffers(&device);
 
@@ -234,6 +257,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             label: transforms_label.as_deref(),
             size: std::mem::size_of::<Transforms>() as u64,
             usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let colors_ubo = create_buffer_with_data(
@@ -508,7 +532,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                             }
                             Some(t) => &t.1,
                         };
-                        let texture_view = texture.texture.create_default_view();
+                        let texture_view = texture.texture.create_view(&Default::default());
 
                         flush_draw(
                             shape.id,
@@ -641,7 +665,6 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: texture_label.as_deref(),
             size: extent,
-            array_layer_count: 1,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -649,25 +672,17 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             usage: wgpu::TextureUsage::SAMPLED | wgpu::TextureUsage::COPY_DST,
         });
 
-        let buffer = create_buffer_with_data(
-            &self.device,
-            &data,
-            wgpu::BufferUsage::COPY_SRC,
-            create_debug_label!("{} transfer buffer {}", debug_str, id),
-        );
-
-        self.register_encoder.copy_buffer_to_texture(
-            wgpu::BufferCopyView {
-                buffer: &buffer,
-                offset: 0,
-                bytes_per_row: 4 * extent.width,
-                rows_per_image: 0,
-            },
+        self.queue.write_texture(
             wgpu::TextureCopyView {
                 texture: &texture,
                 mip_level: 0,
-                array_layer: 0,
-                origin: wgpu::Origin3d::ZERO,
+                origin: Default::default(),
+            },
+            &data,
+            wgpu::TextureDataLayout {
+                offset: 0,
+                bytes_per_row: 4 * extent.width,
+                rows_per_image: 0,
             },
             extent,
         );
@@ -696,115 +711,6 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
-
-    fn draw_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Color) {
-        let (frame_output, encoder) = if let Some((frame_output, encoder)) = &mut self.current_frame
-        {
-            (frame_output, encoder)
-        } else {
-            return;
-        };
-
-        let world_matrix = [
-            [width, 0.0, 0.0, 0.0],
-            [0.0, height, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [x, y, 0.0, 1.0],
-        ];
-
-        let mult_color = [
-            f32::from(color.r) / 255.0,
-            f32::from(color.g) / 255.0,
-            f32::from(color.b) / 255.0,
-            f32::from(color.a) / 255.0,
-        ];
-
-        let add_color = [0.0, 0.0, 0.0, 0.0];
-
-        let transforms_ubo = create_buffer_with_data(
-            &self.device,
-            bytemuck::cast_slice(&[Transforms {
-                view_matrix: self.view_matrix,
-                world_matrix,
-            }]),
-            wgpu::BufferUsage::UNIFORM,
-            create_debug_label!("Rectangle transfer buffer"),
-        );
-
-        let colors_ubo = create_buffer_with_data(
-            &self.device,
-            bytemuck::cast_slice(&[ColorAdjustments {
-                mult_color,
-                add_color,
-            }]),
-            wgpu::BufferUsage::UNIFORM,
-            create_debug_label!("Rectangle colors transfer buffer"),
-        );
-
-        let bind_group_label = create_debug_label!("Rectangle bind group");
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.pipelines.color.bind_layout,
-            bindings: &[
-                wgpu::Binding {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer {
-                        buffer: &transforms_ubo,
-                        range: 0..std::mem::size_of::<Transforms>() as u64,
-                    },
-                },
-                wgpu::Binding {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer {
-                        buffer: &colors_ubo,
-                        range: 0..std::mem::size_of::<ColorAdjustments>() as u64,
-                    },
-                },
-            ],
-            label: bind_group_label.as_deref(),
-        });
-
-        let (color_attachment, resolve_target) = if self.msaa_sample_count >= 2 {
-            (&self.frame_buffer_view, Some(frame_output.view()))
-        } else {
-            (frame_output.view(), None)
-        };
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
-                attachment: color_attachment,
-                load_op: wgpu::LoadOp::Load,
-                store_op: wgpu::StoreOp::Store,
-                clear_color: wgpu::Color::WHITE,
-                resolve_target,
-            }],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
-                attachment: &self.depth_texture_view,
-                depth_load_op: wgpu::LoadOp::Load,
-                depth_store_op: wgpu::StoreOp::Store,
-                stencil_load_op: wgpu::LoadOp::Load,
-                stencil_store_op: wgpu::StoreOp::Store,
-                clear_depth: 0.0,
-                clear_stencil: 0,
-            }),
-        });
-
-        render_pass.set_pipeline(&self.pipelines.color.pipeline_for(
-            self.num_masks,
-            self.num_masks_active,
-            self.test_stencil_mask,
-            self.write_stencil_mask,
-        ));
-        render_pass.set_bind_group(0, &bind_group, &[]);
-        render_pass.set_vertex_buffer(0, &self.quad_vbo, 0, 0);
-        render_pass.set_index_buffer(&self.quad_ibo, 0, 0);
-
-        if self.num_masks_active < self.num_masks {
-            render_pass.set_stencil_reference(self.write_stencil_mask);
-        } else {
-            render_pass.set_stencil_reference(self.test_stencil_mask);
-        }
-
-        render_pass.draw_indexed(0..6, 0, 0..1);
-    }
 }
 
 impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
@@ -823,14 +729,13 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 height,
                 depth: 1,
             },
-            array_layer_count: 1,
             mip_level_count: 1,
             sample_count: self.msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: self.target.format(),
             usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
         });
-        self.frame_buffer_view = frame_buffer.create_default_view();
+        self.frame_buffer_view = frame_buffer.create_view(&Default::default());
 
         let label = create_debug_label!("Depth texture");
         let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -840,14 +745,13 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 height,
                 depth: 1,
             },
-            array_layer_count: 1,
             mip_level_count: 1,
             sample_count: self.msaa_sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24PlusStencil8,
             usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
         });
-        self.depth_texture_view = depth_texture.create_default_view();
+        self.depth_texture_view = depth_texture.create_view(&Default::default());
 
         self.viewport_width = width as f32;
         self.viewport_height = height as f32;
@@ -867,25 +771,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
     }
 
     fn register_glyph_shape(&mut self, glyph: &Glyph) -> ShapeHandle {
-        let shape = swf::Shape {
-            version: 2,
-            id: 0,
-            shape_bounds: Default::default(),
-            edge_bounds: Default::default(),
-            has_fill_winding_rule: false,
-            has_non_scaling_strokes: false,
-            has_scaling_strokes: true,
-            styles: swf::ShapeStyles {
-                fill_styles: vec![FillStyle::Color(Color {
-                    r: 255,
-                    g: 255,
-                    b: 255,
-                    a: 255,
-                })],
-                line_styles: vec![],
-            },
-            shape: glyph.shape_records.clone(),
-        };
+        let shape = ruffle_core::shape_utils::swf_glyph_to_shape(glyph);
         let handle = ShapeHandle(self.meshes.len());
         let mesh = self.register_shape_internal((&shape).into());
         self.meshes.push(mesh);
@@ -936,8 +822,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                         }),
                 ))
             }
-            Err(wgpu::TimeOut) => {
-                log::warn!("Couldn't begin new render frame: timed out whilst aquiring new swapchain output");
+            Err(e) => {
+                log::warn!("Couldn't begin new render frame: {}", e);
                 None
             }
         };
@@ -956,24 +842,27 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
                     attachment: color_attachment,
-                    load_op: wgpu::LoadOp::Clear,
-                    store_op: wgpu::StoreOp::Store,
-                    clear_color: wgpu::Color {
-                        r: f64::from(clear.r) / 255.0,
-                        g: f64::from(clear.g) / 255.0,
-                        b: f64::from(clear.b) / 255.0,
-                        a: f64::from(clear.a) / 255.0,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(clear.r) / 255.0,
+                            g: f64::from(clear.g) / 255.0,
+                            b: f64::from(clear.b) / 255.0,
+                            a: f64::from(clear.a) / 255.0,
+                        }),
+                        store: true,
                     },
                     resolve_target,
                 }],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
                     attachment: &self.depth_texture_view,
-                    depth_load_op: wgpu::LoadOp::Clear,
-                    depth_store_op: wgpu::StoreOp::Store,
-                    stencil_load_op: wgpu::LoadOp::Clear,
-                    stencil_store_op: wgpu::StoreOp::Store,
-                    clear_depth: 0.0,
-                    clear_stencil: 0,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: true,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: true,
+                    }),
                 }),
             });
         }
@@ -988,7 +877,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     return;
                 };
 
-            use ruffle_core::swf::Matrix;
             let transform = Transform {
                 matrix: transform.matrix
                     * Matrix {
@@ -1028,8 +916,10 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 create_debug_label!("Bitmap {} colors transfer buffer", bitmap.0),
             );
 
-            let texture_view = texture.texture.create_default_view();
+            let texture_view = texture.texture.create_view(&Default::default());
+            let sampler_label = create_debug_label!("Bitmap {} sampler", bitmap.0);
             let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: sampler_label.as_deref(),
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -1038,39 +928,38 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 mipmap_filter: wgpu::FilterMode::Linear,
                 lod_min_clamp: 0.0,
                 lod_max_clamp: 100.0,
-                compare: wgpu::CompareFunction::Undefined,
+                compare: None,
+                anisotropy_clamp: None,
             });
 
             let bind_group_label = create_debug_label!("Bitmap {} bind group", bitmap.0);
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 layout: &self.pipelines.bitmap.bind_layout,
-                bindings: &[
-                    wgpu::Binding {
+                entries: &[
+                    wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::Buffer {
-                            buffer: &transforms_ubo,
-                            range: 0..std::mem::size_of::<Transforms>() as u64,
-                        },
+                        resource: wgpu::BindingResource::Buffer(
+                            transforms_ubo.slice(0..std::mem::size_of::<Transforms>() as u64),
+                        ),
                     },
-                    wgpu::Binding {
+                    wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Buffer {
-                            buffer: &self.quad_tex_transforms,
-                            range: 0..std::mem::size_of::<TextureTransforms>() as u64,
-                        },
+                        resource: wgpu::BindingResource::Buffer(
+                            self.quad_tex_transforms
+                                .slice(0..std::mem::size_of::<TextureTransforms>() as u64),
+                        ),
                     },
-                    wgpu::Binding {
+                    wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::Buffer {
-                            buffer: &colors_ubo,
-                            range: 0..std::mem::size_of::<ColorAdjustments>() as u64,
-                        },
+                        resource: wgpu::BindingResource::Buffer(
+                            colors_ubo.slice(0..std::mem::size_of::<ColorAdjustments>() as u64),
+                        ),
                     },
-                    wgpu::Binding {
+                    wgpu::BindGroupEntry {
                         binding: 3,
                         resource: wgpu::BindingResource::TextureView(&texture_view),
                     },
-                    wgpu::Binding {
+                    wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::Sampler(&sampler),
                     },
@@ -1086,19 +975,22 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
                     attachment: color_attachment,
-                    load_op: wgpu::LoadOp::Load,
-                    store_op: wgpu::StoreOp::Store,
-                    clear_color: wgpu::Color::WHITE,
                     resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    },
                 }],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
                     attachment: &self.depth_texture_view,
-                    depth_load_op: wgpu::LoadOp::Load,
-                    depth_store_op: wgpu::StoreOp::Store,
-                    stencil_load_op: wgpu::LoadOp::Load,
-                    stencil_store_op: wgpu::StoreOp::Store,
-                    clear_depth: 0.0,
-                    clear_stencil: 0,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    }),
                 }),
             });
 
@@ -1109,8 +1001,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 self.write_stencil_mask,
             ));
             render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.set_vertex_buffer(0, &self.quad_vbo, 0, 0);
-            render_pass.set_index_buffer(&self.quad_ibo, 0, 0);
+            render_pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+            render_pass.set_index_buffer(self.quad_ibo.slice(..));
 
             if self.num_masks_active < self.num_masks {
                 render_pass.set_stencil_reference(self.write_stencil_mask);
@@ -1189,19 +1081,22 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
                 attachment: color_attachment,
-                load_op: wgpu::LoadOp::Load,
-                store_op: wgpu::StoreOp::Store,
-                clear_color: wgpu::Color::WHITE,
                 resolve_target,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                },
             }],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
                 attachment: &self.depth_texture_view,
-                depth_load_op: wgpu::LoadOp::Load,
-                depth_store_op: wgpu::StoreOp::Store,
-                stencil_load_op: wgpu::LoadOp::Load,
-                stencil_store_op: wgpu::StoreOp::Store,
-                clear_depth: 0.0,
-                clear_stencil: 0,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                }),
             }),
         });
 
@@ -1234,8 +1129,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             }
 
             render_pass.set_bind_group(0, &draw.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, &draw.vertex_buffer, 0, 0);
-            render_pass.set_index_buffer(&draw.index_buffer, 0, 0);
+            render_pass.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(draw.index_buffer.slice(..));
 
             if self.num_masks_active < self.num_masks {
                 render_pass.set_stencil_reference(self.write_stencil_mask);
@@ -1245,6 +1140,121 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
             render_pass.draw_indexed(0..draw.index_count, 0, 0..1);
         }
+    }
+
+    fn draw_rect(&mut self, color: Color, matrix: &Matrix) {
+        let (frame_output, encoder) = if let Some((frame_output, encoder)) = &mut self.current_frame
+        {
+            (frame_output, encoder)
+        } else {
+            return;
+        };
+
+        let world_matrix = [
+            [matrix.a, matrix.b, 0.0, 0.0],
+            [matrix.c, matrix.d, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [
+                matrix.tx.to_pixels() as f32,
+                matrix.ty.to_pixels() as f32,
+                0.0,
+                1.0,
+            ],
+        ];
+
+        let mult_color = [
+            f32::from(color.r) / 255.0,
+            f32::from(color.g) / 255.0,
+            f32::from(color.b) / 255.0,
+            f32::from(color.a) / 255.0,
+        ];
+
+        let add_color = [0.0, 0.0, 0.0, 0.0];
+
+        let transforms_ubo = create_buffer_with_data(
+            &self.device,
+            bytemuck::cast_slice(&[Transforms {
+                view_matrix: self.view_matrix,
+                world_matrix,
+            }]),
+            wgpu::BufferUsage::UNIFORM,
+            create_debug_label!("Rectangle transfer buffer"),
+        );
+
+        let colors_ubo = create_buffer_with_data(
+            &self.device,
+            bytemuck::cast_slice(&[ColorAdjustments {
+                mult_color,
+                add_color,
+            }]),
+            wgpu::BufferUsage::UNIFORM,
+            create_debug_label!("Rectangle colors transfer buffer"),
+        );
+
+        let bind_group_label = create_debug_label!("Rectangle bind group");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.pipelines.color.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(
+                        transforms_ubo.slice(0..std::mem::size_of::<Transforms>() as u64),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(
+                        colors_ubo.slice(0..std::mem::size_of::<ColorAdjustments>() as u64),
+                    ),
+                },
+            ],
+            label: bind_group_label.as_deref(),
+        });
+
+        let (color_attachment, resolve_target) = if self.msaa_sample_count >= 2 {
+            (&self.frame_buffer_view, Some(frame_output.view()))
+        } else {
+            (frame_output.view(), None)
+        };
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
+                attachment: color_attachment,
+                resolve_target,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                },
+            }],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
+                attachment: &self.depth_texture_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                }),
+            }),
+        });
+
+        render_pass.set_pipeline(&self.pipelines.color.pipeline_for(
+            self.num_masks,
+            self.num_masks_active,
+            self.test_stencil_mask,
+            self.write_stencil_mask,
+        ));
+        render_pass.set_bind_group(0, &bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+        render_pass.set_index_buffer(self.quad_ibo.slice(..));
+
+        if self.num_masks_active < self.num_masks {
+            render_pass.set_stencil_reference(self.write_stencil_mask);
+        } else {
+            render_pass.set_stencil_reference(self.test_stencil_mask);
+        }
+
+        render_pass.draw_indexed(0..6, 0, 0..1);
     }
 
     fn end_frame(&mut self) {
@@ -1260,7 +1270,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             self.target.submit(
                 &self.device,
                 &self.queue,
-                &[register_buffer, encoder.finish()],
+                vec![register_buffer, encoder.finish()],
             );
         }
     }
@@ -1270,54 +1280,66 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             Letterbox::None => {}
             Letterbox::Letterbox(margin) => {
                 self.draw_rect(
-                    0.0,
-                    0.0,
-                    self.viewport_width,
-                    margin,
                     Color {
                         r: 0,
                         g: 0,
                         b: 0,
                         a: 255,
                     },
+                    &Matrix::create_box(
+                        self.viewport_width,
+                        margin,
+                        0.0,
+                        Twips::zero(),
+                        Twips::zero(),
+                    ),
                 );
                 self.draw_rect(
-                    0.0,
-                    self.viewport_height - margin,
-                    self.viewport_width,
-                    margin,
                     Color {
                         r: 0,
                         g: 0,
                         b: 0,
                         a: 255,
                     },
+                    &Matrix::create_box(
+                        self.viewport_width,
+                        margin,
+                        0.0,
+                        Twips::zero(),
+                        Twips::from_pixels((self.viewport_height - margin) as f64),
+                    ),
                 );
             }
             Letterbox::Pillarbox(margin) => {
                 self.draw_rect(
-                    0.0,
-                    0.0,
-                    margin,
-                    self.viewport_height,
                     Color {
                         r: 0,
                         g: 0,
                         b: 0,
                         a: 255,
                     },
+                    &Matrix::create_box(
+                        margin,
+                        self.viewport_height,
+                        0.0,
+                        Twips::zero(),
+                        Twips::zero(),
+                    ),
                 );
                 self.draw_rect(
-                    self.viewport_width - margin,
-                    0.0,
-                    margin,
-                    self.viewport_height,
                     Color {
                         r: 0,
                         g: 0,
                         b: 0,
                         a: 255,
                     },
+                    &Matrix::create_box(
+                        margin,
+                        self.viewport_height,
+                        0.0,
+                        Twips::from_pixels((self.viewport_width - margin) as f64),
+                        Twips::zero(),
+                    ),
                 );
             }
         }
@@ -1345,20 +1367,23 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
                         attachment: color_attachment,
-                        load_op: wgpu::LoadOp::Load,
-                        store_op: wgpu::StoreOp::Store,
-                        clear_color: wgpu::Color::WHITE,
                         resolve_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: true,
+                        },
                     }],
                     depth_stencil_attachment: Some(
                         wgpu::RenderPassDepthStencilAttachmentDescriptor {
                             attachment: &self.depth_texture_view,
-                            depth_load_op: wgpu::LoadOp::Load,
-                            depth_store_op: wgpu::StoreOp::Store,
-                            stencil_load_op: wgpu::LoadOp::Clear,
-                            stencil_store_op: wgpu::StoreOp::Store,
-                            clear_depth: 0.0,
-                            clear_stencil: self.test_stencil_mask,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: true,
+                            }),
+                            stencil_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(self.test_stencil_mask),
+                                store: true,
+                            }),
                         },
                     ),
                 });

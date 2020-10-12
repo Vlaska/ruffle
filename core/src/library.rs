@@ -3,12 +3,16 @@ use crate::character::Character;
 use crate::display_object::TDisplayObject;
 use crate::font::{Font, FontDescriptor};
 use crate::prelude::*;
-use crate::tag_utils::SwfMovie;
+use crate::tag_utils::{SwfMovie, SwfSlice};
+use crate::vminterface::AvmType;
 use gc_arena::{Collect, MutationContext};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use swf::CharacterId;
+use swf::{CharacterId, TagCode};
 use weak_table::PtrWeakKeyHashMap;
+
+/// Boxed error alias.
+type Error = Box<dyn std::error::Error>;
 
 /// Symbol library for a single given SWF.
 #[derive(Collect)]
@@ -19,16 +23,18 @@ pub struct MovieLibrary<'gc> {
     jpeg_tables: Option<Vec<u8>>,
     device_font: Option<Font<'gc>>,
     fonts: HashMap<FontDescriptor, Font<'gc>>,
+    avm_type: AvmType,
 }
 
 impl<'gc> MovieLibrary<'gc> {
-    pub fn new() -> Self {
+    pub fn new(avm_type: AvmType) -> Self {
         MovieLibrary {
             characters: HashMap::new(),
             export_characters: HashMap::new(),
             jpeg_tables: None,
             device_font: None,
             fonts: HashMap::new(),
+            avm_type,
         }
     }
 
@@ -193,11 +199,26 @@ impl<'gc> MovieLibrary<'gc> {
     pub fn set_device_font(&mut self, font: Option<Font<'gc>>) {
         self.device_font = font;
     }
-}
 
-impl Default for MovieLibrary<'_> {
-    fn default() -> Self {
-        Self::new()
+    /// Check if the current movie's VM type is compatible with running code on
+    /// a particular VM. If it is not, then this yields an error.
+    pub fn check_avm_type(&mut self, new_type: AvmType) -> Result<(), Error> {
+        if self.avm_type != new_type {
+            return Err(format!(
+                "Blocked attempt to run {:?} code on an {:?} movie.",
+                new_type, self.avm_type
+            )
+            .into());
+        }
+
+        self.avm_type = new_type;
+
+        Ok(())
+    }
+
+    /// Get the VM type of this movie.
+    pub fn avm_type(&self) -> AvmType {
+        self.avm_type
     }
 }
 
@@ -223,8 +244,31 @@ impl<'gc> Library<'gc> {
 
     pub fn library_for_movie_mut(&mut self, movie: Arc<SwfMovie>) -> &mut MovieLibrary<'gc> {
         if !self.movie_libraries.contains_key(&movie) {
+            let slice = SwfSlice::from(movie.clone());
+            let mut reader = slice.read_from(0);
+            let vm_type = if movie.header().version > 8 {
+                match reader.read_tag_code_and_length() {
+                    Ok((tag_code, _tag_len))
+                        if TagCode::from_u16(tag_code) == Some(TagCode::FileAttributes) =>
+                    {
+                        match reader.read_file_attributes() {
+                            Ok(attributes) if attributes.is_action_script_3 => AvmType::Avm2,
+                            Ok(_) => AvmType::Avm1,
+                            Err(e) => {
+                                log::error!("Got {} when reading FileAttributes", e);
+                                AvmType::Avm1
+                            }
+                        }
+                    }
+                    // SWF defaults to AVM1 if FileAttributes is not the first tag.
+                    _ => AvmType::Avm1,
+                }
+            } else {
+                AvmType::Avm1
+            };
+
             self.movie_libraries
-                .insert(movie.clone(), MovieLibrary::default());
+                .insert(movie.clone(), MovieLibrary::new(vm_type));
         };
 
         self.movie_libraries.get_mut(&movie).unwrap()

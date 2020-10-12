@@ -1,16 +1,17 @@
-use ruffle_core::backend::render::swf::{self, FillStyle};
+use ruffle_core::backend::render::swf;
 use ruffle_core::backend::render::{
     srgb_to_linear, Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, Color, Letterbox,
     RenderBackend, ShapeHandle, Transform,
 };
 use ruffle_core::shape_utils::DistilledShape;
+use ruffle_core::swf::Matrix;
 use ruffle_render_common_tess::{GradientSpread, GradientType, ShapeTessellator, Vertex};
 use ruffle_web_common::JsResult;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
     HtmlCanvasElement, OesVertexArrayObject, WebGl2RenderingContext as Gl2, WebGlBuffer,
     WebGlFramebuffer, WebGlProgram, WebGlRenderbuffer, WebGlRenderingContext as Gl, WebGlShader,
-    WebGlTexture, WebGlUniformLocation, WebGlVertexArrayObject,
+    WebGlTexture, WebGlUniformLocation, WebGlVertexArrayObject, WebglDebugRendererInfo,
 };
 
 type Error = Box<dyn std::error::Error>;
@@ -65,6 +66,8 @@ pub struct WebGlRenderBackend {
     view_matrix: [[f32; 4]; 4],
 }
 
+const MAX_GRADIENT_COLORS: usize = 15;
+
 impl WebGlRenderBackend {
     pub fn new(canvas: &HtmlCanvasElement) -> Result<Self, Error> {
         // Create WebGL context.
@@ -73,6 +76,7 @@ impl WebGlRenderBackend {
             ("alpha", JsValue::FALSE),
             ("antialias", JsValue::FALSE),
             ("depth", JsValue::FALSE),
+            ("failIfMajorPerformanceCaveat", JsValue::TRUE), // fail if no GPU available
         ];
         let context_options = js_sys::Object::new();
         for (name, value) in options.iter() {
@@ -137,6 +141,18 @@ impl WebGlRenderBackend {
                 return Err("Unable to create WebGL rendering context".into());
             }
         };
+
+        // Get WebGL driver info.
+        let driver_info = if gl.get_extension("WEBGL_debug_renderer_info").is_ok() {
+            gl.get_parameter(WebglDebugRendererInfo::UNMASKED_RENDERER_WEBGL)
+                .ok()
+                .and_then(|val| val.as_string())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        } else {
+            "<unknown>".to_string()
+        };
+
+        log::info!("WebGL graphics driver: {}", driver_info);
 
         let color_vertex = Self::compile_shader(&gl, Gl::VERTEX_SHADER, COLOR_VERTEX_GLSL)?;
         let texture_vertex = Self::compile_shader(&gl, Gl::VERTEX_SHADER, TEXTURE_VERTEX_GLSL)?;
@@ -341,11 +357,12 @@ impl WebGlRenderBackend {
         gl.bind_renderbuffer(Gl2::RENDERBUFFER, Some(&color_renderbuffer));
         gl.renderbuffer_storage_multisample(
             Gl2::RENDERBUFFER,
-            4,
+            self.msaa_sample_count as i32,
             Gl2::RGB8,
             self.viewport_width as i32,
             self.viewport_height as i32,
         );
+        gl.check_error("renderbuffer_storage_multisample (color)")?;
 
         let stencil_renderbuffer = gl
             .create_renderbuffer()
@@ -353,11 +370,12 @@ impl WebGlRenderBackend {
         gl.bind_renderbuffer(Gl2::RENDERBUFFER, Some(&stencil_renderbuffer));
         gl.renderbuffer_storage_multisample(
             Gl2::RENDERBUFFER,
-            4,
+            self.msaa_sample_count as i32,
             Gl2::STENCIL_INDEX8,
             self.viewport_width as i32,
             self.viewport_height as i32,
         );
+        gl.check_error("renderbuffer_storage_multisample (stencil)")?;
 
         gl.bind_framebuffer(Gl2::FRAMEBUFFER, Some(&render_framebuffer));
         gl.framebuffer_renderbuffer(
@@ -478,9 +496,9 @@ impl WebGlRenderBackend {
                     },
                 ),
                 TessDrawType::Gradient(gradient) => {
-                    let mut ratios = [0.0; 8];
-                    let mut colors = [[0.0; 4]; 8];
-                    let num_colors = gradient.num_colors as usize;
+                    let mut ratios = [0.0; MAX_GRADIENT_COLORS];
+                    let mut colors = [[0.0; 4]; MAX_GRADIENT_COLORS];
+                    let num_colors = (gradient.num_colors as usize).min(MAX_GRADIENT_COLORS);
                     ratios[..num_colors].copy_from_slice(&gradient.ratios[..num_colors]);
                     colors[..num_colors].copy_from_slice(&gradient.colors[..num_colors]);
                     // Convert to linear color space if this is a linear-interpolated gradient.
@@ -489,7 +507,7 @@ impl WebGlRenderBackend {
                             *color = srgb_to_linear(*color);
                         }
                     }
-                    for i in num_colors..8 {
+                    for i in num_colors..MAX_GRADIENT_COLORS {
                         ratios[i] = ratios[i - 1];
                         colors[i] = colors[i - 1];
                     }
@@ -616,7 +634,7 @@ impl WebGlRenderBackend {
     }
 
     fn set_stencil_state(&mut self) {
-        // Set stencil state for masking, if neccessary.
+        // Set stencil state for masking, if necessary.
         if self.mask_state_dirty {
             if self.num_masks > 0 {
                 self.gl.enable(Gl::STENCIL_TEST);
@@ -732,25 +750,7 @@ impl RenderBackend for WebGlRenderBackend {
     }
 
     fn register_glyph_shape(&mut self, glyph: &swf::Glyph) -> ShapeHandle {
-        let shape = swf::Shape {
-            version: 2,
-            id: 0,
-            shape_bounds: Default::default(),
-            edge_bounds: Default::default(),
-            has_fill_winding_rule: false,
-            has_non_scaling_strokes: false,
-            has_scaling_strokes: true,
-            styles: swf::ShapeStyles {
-                fill_styles: vec![FillStyle::Color(Color {
-                    r: 255,
-                    g: 255,
-                    b: 255,
-                    a: 255,
-                })],
-                line_styles: vec![],
-            },
-            shape: glyph.shape_records.clone(),
-        };
+        let shape = ruffle_core::shape_utils::swf_glyph_to_shape(glyph);
         let handle = ShapeHandle(self.meshes.len());
         let mesh = self.register_shape_internal((&shape).into());
         self.meshes.push(mesh);
@@ -917,7 +917,6 @@ impl RenderBackend for WebGlRenderBackend {
             }
 
             // Scale the quad to the bitmap's dimensions.
-            use ruffle_core::swf::Matrix;
             let scale_transform = Transform {
                 matrix: transform.matrix
                     * Matrix {
@@ -1020,8 +1019,12 @@ impl RenderBackend for WebGlRenderBackend {
                         gradient.gradient_type,
                     );
                     program.uniform1fv(&self.gl, ShaderUniform::GradientRatios, &gradient.ratios);
-                    let colors =
-                        unsafe { std::slice::from_raw_parts(gradient.colors[0].as_ptr(), 32) };
+                    let colors = unsafe {
+                        std::slice::from_raw_parts(
+                            gradient.colors[0].as_ptr(),
+                            MAX_GRADIENT_COLORS * 4,
+                        )
+                    };
                     program.uniform4fv(&self.gl, ShaderUniform::GradientColors, &colors);
                     program.uniform1i(
                         &self.gl,
@@ -1045,12 +1048,14 @@ impl RenderBackend for WebGlRenderBackend {
                     );
                 }
                 DrawType::Bitmap(bitmap) => {
-                    let texture = &self
-                        .textures
-                        .iter()
-                        .find(|(id, _tex)| *id == bitmap.id)
-                        .unwrap()
-                        .1;
+                    let texture = if let Some(texture) =
+                        self.textures.iter().find(|(id, _tex)| *id == bitmap.id)
+                    {
+                        &texture.1
+                    } else {
+                        // Bitmap not registered
+                        continue;
+                    };
 
                     program.uniform_matrix3fv(
                         &self.gl,
@@ -1090,6 +1095,76 @@ impl RenderBackend for WebGlRenderBackend {
             self.gl
                 .draw_elements_with_i32(Gl::TRIANGLES, draw.num_indices, Gl::UNSIGNED_SHORT, 0);
         }
+    }
+
+    fn draw_rect(&mut self, color: Color, matrix: &Matrix) {
+        let world_matrix = [
+            [matrix.a, matrix.b, 0.0, 0.0],
+            [matrix.c, matrix.d, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [
+                matrix.tx.to_pixels() as f32,
+                matrix.ty.to_pixels() as f32,
+                0.0,
+                1.0,
+            ],
+        ];
+
+        let mult_color = [1.0, 1.0, 1.0, 1.0];
+
+        let add_color = [
+            color.r as f32 * 255.0,
+            color.g as f32 * 255.0,
+            color.b as f32 * 255.0,
+            color.a as f32 * 255.0,
+        ];
+
+        self.set_stencil_state();
+
+        let program = &self.color_program;
+        let src_blend = Gl::SRC_ALPHA;
+        let dst_blend = Gl::ONE_MINUS_SRC_ALPHA;
+
+        // Set common render state, while minimizing unnecessary state changes.
+        // TODO: Using designated layout specifiers in WebGL2/OpenGL ES 3, we could guarantee that uniforms
+        // are in the same location between shaders, and avoid changing them unless necessary.
+        if program as *const ShaderProgram != self.active_program {
+            self.gl.use_program(Some(&program.program));
+            self.active_program = program as *const ShaderProgram;
+
+            program.uniform_matrix4fv(&self.gl, ShaderUniform::ViewMatrix, &self.view_matrix);
+
+            self.mult_color = None;
+            self.add_color = None;
+
+            if (src_blend, dst_blend) != self.blend_func {
+                self.gl.blend_func(src_blend, dst_blend);
+                self.blend_func = (src_blend, dst_blend);
+            }
+        };
+
+        self.color_program
+            .uniform_matrix4fv(&self.gl, ShaderUniform::WorldMatrix, &world_matrix);
+        if Some(mult_color) != self.mult_color {
+            self.color_program
+                .uniform4fv(&self.gl, ShaderUniform::MultColor, &mult_color);
+            self.mult_color = Some(mult_color);
+        }
+        if Some(add_color) != self.add_color {
+            self.color_program
+                .uniform4fv(&self.gl, ShaderUniform::AddColor, &add_color);
+            self.add_color = Some(add_color);
+        }
+
+        let quad = &self.meshes[self.quad_shape.0];
+        self.bind_vertex_array(Some(&quad.draws[0].vao));
+
+        self.gl.draw_elements_with_i32(
+            Gl::TRIANGLES,
+            quad.draws[0].num_indices,
+            Gl::UNSIGNED_SHORT,
+            0,
+        );
     }
 
     fn draw_letterbox(&mut self, letterbox: Letterbox) {
@@ -1192,8 +1267,8 @@ struct Texture {
 struct Gradient {
     matrix: [[f32; 3]; 3],
     gradient_type: i32,
-    ratios: [f32; 8],
-    colors: [[f32; 4]; 8],
+    ratios: [f32; MAX_GRADIENT_COLORS],
+    colors: [[f32; 4]; MAX_GRADIENT_COLORS],
     num_colors: u32,
     repeat_mode: i32,
     focal_point: f32,
@@ -1361,5 +1436,31 @@ impl ShaderProgram {
             false,
             unsafe { std::slice::from_raw_parts(values[0].as_ptr(), 16) },
         );
+    }
+}
+
+impl WebGlRenderBackend {}
+
+trait GlExt {
+    fn check_error(&self, error_msg: &'static str) -> Result<(), Error>;
+}
+
+impl GlExt for Gl {
+    /// Check if GL returned an error for the previous operation.
+    fn check_error(&self, error_msg: &'static str) -> Result<(), Error> {
+        match self.get_error() {
+            Self::NO_ERROR => Ok(()),
+            error => Err(format!("WebGL: Error in {}: {}", error_msg, error).into()),
+        }
+    }
+}
+
+impl GlExt for Gl2 {
+    /// Check if GL returned an error for the previous operation.
+    fn check_error(&self, error_msg: &'static str) -> Result<(), Error> {
+        match self.get_error() {
+            Self::NO_ERROR => Ok(()),
+            error => Err(format!("WebGL: Error in {}: {}", error_msg, error).into()),
+        }
     }
 }

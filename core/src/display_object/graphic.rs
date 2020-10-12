@@ -2,6 +2,7 @@ use crate::backend::render::ShapeHandle;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::prelude::*;
+use crate::types::{Degrees, Percent};
 use gc_arena::{Collect, GcCell};
 
 #[derive(Clone, Debug, Collect, Copy)]
@@ -15,11 +16,12 @@ pub struct GraphicData<'gc> {
 }
 
 impl<'gc> Graphic<'gc> {
-    pub fn from_swf_tag(context: &mut UpdateContext<'_, 'gc, '_>, swf_shape: &swf::Shape) -> Self {
+    pub fn from_swf_tag(context: &mut UpdateContext<'_, 'gc, '_>, swf_shape: swf::Shape) -> Self {
         let static_data = GraphicStatic {
             id: swf_shape.id,
-            render_handle: context.renderer.register_shape(swf_shape.into()),
             bounds: swf_shape.shape_bounds.clone().into(),
+            render_handle: context.renderer.register_shape((&swf_shape).into()),
+            shape: swf_shape,
         };
         Graphic(GcCell::allocate(
             context.gc_context,
@@ -53,7 +55,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
         bounds
     }
 
-    fn run_frame(&mut self, _context: &mut UpdateContext) {
+    fn run_frame(&self, _context: &mut UpdateContext) {
         // Noop
     }
 
@@ -72,6 +74,22 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
 
         context.transform_stack.pop();
     }
+
+    fn hit_test_shape(
+        &self,
+        _context: &mut UpdateContext<'_, 'gc, '_>,
+        point: (Twips, Twips),
+    ) -> bool {
+        // Transform point to local coordinates and test.
+        if self.world_bounds().contains(point) {
+            let local_matrix = self.global_to_local_matrix();
+            let point = local_matrix * point;
+            let shape = &self.0.read().static_data.shape;
+            crate::shape_utils::shape_hit_test(shape, point, &local_matrix)
+        } else {
+            false
+        }
+    }
 }
 
 unsafe impl<'gc> gc_arena::Collect for GraphicData<'gc> {
@@ -85,6 +103,7 @@ unsafe impl<'gc> gc_arena::Collect for GraphicData<'gc> {
 #[allow(dead_code)]
 struct GraphicStatic {
     id: CharacterId,
+    shape: swf::Shape,
     render_handle: ShapeHandle,
     bounds: BoundingBox,
 }

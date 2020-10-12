@@ -19,12 +19,54 @@ module.exports = class RuffleObject extends RufflePlayer {
 
         this.params = RuffleObject.params_of(this);
 
-        //Kick off the SWF download.
+        const allowScriptAccess = RuffleObject.find_case_insensitive(
+            this.params,
+            "allowScriptAccess",
+            "sameDomain"
+        );
+        let url = null;
+
         if (this.attributes.data) {
-            this.stream_swf_url(this.attributes.data.value);
+            url = this.attributes.data.value;
         } else if (this.params.movie) {
-            this.stream_swf_url(this.params.movie);
+            url = this.params.movie;
         }
+
+        if (url) {
+            this.allow_script_access =
+                allowScriptAccess &&
+                (allowScriptAccess.toLowerCase() === "always" ||
+                    (allowScriptAccess.toLowerCase() === "samedomain" &&
+                        new URL(window.location.href).origin ===
+                            new URL(url, window.location.href).origin));
+
+            //Kick off the SWF download.
+            this.stream_swf_url(url);
+        }
+    }
+
+    debug_player_info() {
+        let error_text = super.debug_player_info();
+        error_text += "Player type: Object\n";
+
+        let url = null;
+
+        if (this.attributes.data) {
+            url = this.attributes.data.value;
+        } else if (this.params.movie) {
+            url = this.params.movie;
+        }
+        error_text += `SWF URL: ${url}\n`;
+
+        Object.keys(this.params).forEach((key) => {
+            error_text += `Param ${key}: ${this.params[key]}\n`;
+        });
+
+        Object.keys(this.attributes).forEach((key) => {
+            error_text += `Attribute ${key}: ${this.attributes[key]}\n`;
+        });
+
+        return error_text;
     }
 
     get data() {
@@ -79,6 +121,20 @@ module.exports = class RuffleObject extends RufflePlayer {
         }
 
         return false;
+    }
+
+    /*
+     * Find and return the first value in obj with the given key.
+     * Many Flash params were case insensitive, so we use this when checking for them.
+     */
+    static find_case_insensitive(obj, key, defaultValue) {
+        key = key.toLowerCase();
+        for (const k in obj) {
+            if (Object.hasOwnProperty.call(obj, k) && key === k.toLowerCase()) {
+                return obj[k];
+            }
+        }
+        return defaultValue;
     }
 
     static params_of(elem) {

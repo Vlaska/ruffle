@@ -343,7 +343,7 @@ impl<'gc> Class<'gc> {
     /// class. They will not be accessible on the class prototype, and any
     /// properties defined on the prototype will be shadowed by these traits.
     pub fn define_instance_trait(&mut self, my_trait: Trait<'gc>) {
-        self.class_traits.push(my_trait);
+        self.instance_traits.push(my_trait);
     }
 
     /// Given a name, append instance traits matching the name to a list of
@@ -406,5 +406,10 @@ impl<'gc> Class<'gc> {
 
     pub fn implements(&mut self, iface: Multiname<'gc>) {
         self.interfaces.push(iface)
+    }
+
+    /// Determine if this class is sealed (no dynamic properties)
+    pub fn is_sealed(&self) -> bool {
+        self.attributes.0.contains(ClassAttributes::Sealed)
     }
 }

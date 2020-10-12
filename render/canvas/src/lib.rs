@@ -5,6 +5,7 @@ use ruffle_core::backend::render::{
 };
 use ruffle_core::color_transform::ColorTransform;
 use ruffle_core::shape_utils::{DistilledShape, DrawCommand};
+use ruffle_core::swf::Matrix;
 use ruffle_web_common::JsResult;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -305,9 +306,7 @@ impl WebCanvasRenderBackend {
 
     #[allow(clippy::float_cmp)]
     #[inline]
-    fn set_transform(&mut self, transform: &Transform) {
-        let matrix = transform.matrix;
-
+    fn set_transform(&mut self, matrix: &Matrix) {
         self.context
             .set_transform(
                 matrix.a.into(),
@@ -477,36 +476,7 @@ impl RenderBackend for WebCanvasRenderBackend {
     }
 
     fn register_glyph_shape(&mut self, glyph: &swf::Glyph) -> ShapeHandle {
-        // Per SWF19 p.164, the FontBoundsTable can contain empty bounds for every glyph (reserved).
-        // SWF19 says this is true through SWFv7, but it seems like it might be generally true?
-        // In any case, we have to be sure to calculate the shape bounds ourselves to make a proper
-        // SVG.
-        let bounds = glyph
-            .clone()
-            .bounds
-            .filter(|b| b.x_min != b.x_max || b.y_min != b.y_max)
-            .unwrap_or_else(|| {
-                ruffle_core::shape_utils::calculate_shape_bounds(&glyph.shape_records[..])
-            });
-        let shape = swf::Shape {
-            version: 2,
-            id: 0,
-            shape_bounds: bounds.clone(),
-            edge_bounds: bounds,
-            has_fill_winding_rule: false,
-            has_non_scaling_strokes: false,
-            has_scaling_strokes: true,
-            styles: swf::ShapeStyles {
-                fill_styles: vec![swf::FillStyle::Color(Color {
-                    r: 255,
-                    g: 255,
-                    b: 255,
-                    a: 255,
-                })],
-                line_styles: vec![],
-            },
-            shape: glyph.shape_records.clone(),
-        };
+        let shape = ruffle_core::shape_utils::swf_glyph_to_shape(glyph);
         self.register_shape((&shape).into())
     }
 
@@ -588,7 +558,7 @@ impl RenderBackend for WebCanvasRenderBackend {
     }
 
     fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform) {
-        self.set_transform(transform);
+        self.set_transform(&transform.matrix);
         self.set_color_filter(transform);
         if let Some(bitmap) = self.bitmaps.get(bitmap.0) {
             let _ = self
@@ -599,7 +569,7 @@ impl RenderBackend for WebCanvasRenderBackend {
     }
 
     fn render_shape(&mut self, shape: ShapeHandle, transform: &Transform) {
-        self.set_transform(transform);
+        self.set_transform(&transform.matrix);
         if let Some(shape) = self.shapes.get(shape.0) {
             for command in shape.0.iter() {
                 match command {
@@ -656,6 +626,25 @@ impl RenderBackend for WebCanvasRenderBackend {
                 }
             }
         }
+    }
+
+    fn draw_rect(&mut self, color: Color, matrix: &Matrix) {
+        self.set_transform(matrix);
+        self.clear_color_filter();
+
+        self.context.set_fill_style(
+            &format!(
+                "rgba({},{},{},{})",
+                color.r,
+                color.g,
+                color.b,
+                f32::from(color.a) / 255.0
+            )
+            .into(),
+        );
+        self.context.fill_rect(0.0, 0.0, 1.0, 1.0);
+
+        self.clear_color_filter();
     }
 
     fn draw_letterbox(&mut self, letterbox: Letterbox) {
@@ -746,7 +735,6 @@ fn swf_shape_to_svg(
 ) -> ShapeData {
     use fnv::FnvHashSet;
     use ruffle_core::shape_utils::DrawPath;
-    use ruffle_core::swf::Matrix;
     use svg::node::element::{
         path::Data, Definitions, Filter, Image, LinearGradient, Path as SvgPath, Pattern,
         RadialGradient, Stop,

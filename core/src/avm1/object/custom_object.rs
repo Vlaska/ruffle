@@ -67,7 +67,7 @@ macro_rules! impl_custom_object_without_set {
         }
 
         fn set_attributes(
-            &mut self,
+            &self,
             gc_context: gc_arena::MutationContext<'gc, '_>,
             name: Option<&str>,
             set_attributes: enumset::EnumSet<crate::avm1::property::Attribute>,
@@ -162,7 +162,7 @@ macro_rules! impl_custom_object_without_set {
         }
 
         fn set_interfaces(
-            &mut self,
+            &self,
             gc_context: gc_arena::MutationContext<'gc, '_>,
             iface_list: Vec<crate::avm1::Object<'gc>>,
         ) {
@@ -258,4 +258,20 @@ macro_rules! impl_custom_object {
             self.0.read().$field.set(name, value, activation)
         }
     };
+}
+
+#[macro_export]
+macro_rules! add_field_accessors {
+    ($([$set_ident: ident, $get_ident: ident, $var: ident, $type_: ty],)*) => {
+        $(
+            pub fn $set_ident(&self, gc_context: MutationContext<'gc, '_>, v: $type_) {
+                self.0.write(gc_context).$var = v;
+            }
+
+            pub fn $get_ident(&self) -> $type_ {
+                self.0.read()
+                    .$var
+            }
+        )*
+    }
 }

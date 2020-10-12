@@ -1,6 +1,7 @@
 //! Represents AVM1 scope chain resolution.
 
 use crate::avm1::activation::Activation;
+use crate::avm1::callable_value::CallableValue;
 use crate::avm1::error::Error;
 use crate::avm1::{Object, ScriptObject, TObject, Value};
 use enumset::EnumSet;
@@ -231,7 +232,7 @@ impl<'gc> Scope<'gc> {
         self.parent
     }
 
-    /// Resolve a particular value in the scope chain.
+    /// Resolve a particular value in the scope chain and the object which this value would expect as its `this` parameter if called.
     ///
     /// Because scopes are object chains, the same rules for `Object::get`
     /// still apply here. This function is allowed to yield `None` to indicate
@@ -241,16 +242,19 @@ impl<'gc> Scope<'gc> {
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
         this: Object<'gc>,
-    ) -> Result<Value<'gc>, Error<'gc>> {
+    ) -> Result<CallableValue<'gc>, Error<'gc>> {
         if self.locals().has_property(activation, name) {
-            return self.locals().get(name, activation);
+            return self
+                .locals()
+                .get(name, activation)
+                .map(|v| CallableValue::Callable(self.locals_cell(), v));
         }
         if let Some(scope) = self.parent() {
             return scope.resolve(name, activation, this);
         }
 
         //TODO: Should undefined variables halt execution?
-        Ok(Value::Undefined)
+        Ok(CallableValue::UnCallable(Value::Undefined))
     }
 
     /// Check if a particular property in the scope chain is defined.

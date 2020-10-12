@@ -12,7 +12,7 @@ use crate::avm2::string::AvmString;
 use crate::avm2::traits::Trait;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
-use crate::impl_avm2_custom_object;
+use crate::{impl_avm2_custom_object, impl_avm2_custom_object_properties};
 use gc_arena::{Collect, GcCell, MutationContext};
 
 /// An Object which can be called to execute it's function code.
@@ -30,12 +30,21 @@ pub struct FunctionObjectData<'gc> {
     exec: Option<Executable<'gc>>,
 }
 
+pub fn implicit_deriver<'gc>(
+    base_proto: Object<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    class: GcCell<'gc, Class<'gc>>,
+    scope: Option<GcCell<'gc, Scope<'gc>>>,
+) -> Result<Object<'gc>, Error> {
+    base_proto.derive(activation, class, scope)
+}
+
 impl<'gc> FunctionObject<'gc> {
     /// Construct a class.
     ///
     /// This function returns both the class itself, and the static class
     /// initializer method that you should call before interacting with the
-    /// class. The latter should be called using the former as a reciever.
+    /// class. The latter should be called using the former as a receiver.
     ///
     /// `base_class` is allowed to be `None`, corresponding to a `null` value
     /// in the VM. This corresponds to no base class, and in practice appears
@@ -47,8 +56,40 @@ impl<'gc> FunctionObject<'gc> {
         base_class: Option<Object<'gc>>,
         scope: Option<GcCell<'gc, Scope<'gc>>>,
     ) -> Result<(Object<'gc>, Object<'gc>), Error> {
+        FunctionObject::from_class_with_deriver(
+            activation,
+            class,
+            base_class,
+            scope,
+            implicit_deriver,
+        )
+    }
+
+    /// Construct a class with a different `TObject` implementation than it's
+    /// base class.
+    ///
+    /// This is identical to `from_class`, save for the fact that you must also
+    /// provide a deriver function to create the subclass prototype with. This
+    /// accepts the superclass's prototype, the activation, class definition,
+    /// and scope. It must return the prototype object that should be used to
+    /// create the class.
+    pub fn from_class_with_deriver<DERIVE>(
+        activation: &mut Activation<'_, 'gc, '_>,
+        class: GcCell<'gc, Class<'gc>>,
+        base_class: Option<Object<'gc>>,
+        scope: Option<GcCell<'gc, Scope<'gc>>>,
+        derive: DERIVE,
+    ) -> Result<(Object<'gc>, Object<'gc>), Error>
+    where
+        DERIVE: FnOnce(
+            Object<'gc>,
+            &mut Activation<'_, 'gc, '_>,
+            GcCell<'gc, Class<'gc>>,
+            Option<GcCell<'gc, Scope<'gc>>>,
+        ) -> Result<Object<'gc>, Error>,
+    {
         let class_read = class.read();
-        let mut class_proto = if let Some(mut base_class) = base_class {
+        let class_proto = if let Some(mut base_class) = base_class {
             let super_proto: Result<_, Error> = base_class
                 .get_property(
                     base_class,
@@ -68,11 +109,21 @@ impl<'gc> FunctionObject<'gc> {
                     .into()
                 });
 
-            super_proto?.derive(activation, class, scope)?
+            derive(super_proto?, activation, class, scope)?
         } else {
             ScriptObject::bare_object(activation.context.gc_context)
         };
 
+        FunctionObject::from_class_and_proto(activation, class, class_proto, scope)
+    }
+
+    /// Construct a class with a custom object type as it's prototype.
+    fn from_class_and_proto(
+        activation: &mut Activation<'_, 'gc, '_>,
+        class: GcCell<'gc, Class<'gc>>,
+        mut class_proto: Object<'gc>,
+        scope: Option<GcCell<'gc, Scope<'gc>>>,
+    ) -> Result<(Object<'gc>, Object<'gc>), Error> {
         let mut interfaces = Vec::new();
         let interface_names = class.read().interfaces().to_vec();
         for interface_name in interface_names {
@@ -107,6 +158,7 @@ impl<'gc> FunctionObject<'gc> {
         let fn_proto = activation.avm2().prototypes().function;
         let class_constr_proto = activation.avm2().prototypes().class;
 
+        let class_read = class.read();
         let initializer = class_read.instance_init();
 
         let mut constr: Object<'gc> = FunctionObject(GcCell::allocate(
@@ -158,9 +210,9 @@ impl<'gc> FunctionObject<'gc> {
         method: Method<'gc>,
         scope: Option<GcCell<'gc, Scope<'gc>>>,
         fn_proto: Object<'gc>,
-        reciever: Option<Object<'gc>>,
+        receiver: Option<Object<'gc>>,
     ) -> Object<'gc> {
-        let exec = Some(Executable::from_method(method, scope, reciever, mc));
+        let exec = Some(Executable::from_method(method, scope, receiver, mc));
 
         FunctionObject(GcCell::allocate(
             mc,
@@ -226,6 +278,7 @@ impl<'gc> FunctionObject<'gc> {
 
 impl<'gc> TObject<'gc> for FunctionObject<'gc> {
     impl_avm2_custom_object!(base);
+    impl_avm2_custom_object_properties!(base);
 
     fn to_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         if let ScriptObjectClass::ClassConstructor(class, ..) = self.0.read().base.class() {
@@ -233,6 +286,10 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         } else {
             Ok("function Function() {}".into())
         }
+    }
+
+    fn to_locale_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
+        self.to_string(mc)
     }
 
     fn value_of(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
@@ -245,13 +302,13 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
 
     fn call(
         self,
-        reciever: Option<Object<'gc>>,
+        receiver: Option<Object<'gc>>,
         arguments: &[Value<'gc>],
         activation: &mut Activation<'_, 'gc, '_>,
         base_proto: Option<Object<'gc>>,
     ) -> Result<Value<'gc>, Error> {
         if let Some(exec) = &self.0.read().exec {
-            exec.exec(reciever, arguments, activation, base_proto)
+            exec.exec(receiver, arguments, activation, base_proto)
         } else {
             Err("Not a callable function!".into())
         }

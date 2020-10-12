@@ -10,7 +10,7 @@ use crate::avm2::scope::Scope;
 use crate::avm2::traits::Trait;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
-use crate::impl_avm2_custom_object;
+use crate::{impl_avm2_custom_object, impl_avm2_custom_object_properties};
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::cell::Ref;
 
@@ -44,10 +44,33 @@ impl<'gc> NamespaceObject<'gc> {
         ))
         .into())
     }
+
+    /// Construct a namespace subclass.
+    pub fn derive(
+        base_proto: Object<'gc>,
+        mc: MutationContext<'gc, '_>,
+        class: GcCell<'gc, Class<'gc>>,
+        scope: Option<GcCell<'gc, Scope<'gc>>>,
+    ) -> Result<Object<'gc>, Error> {
+        let base = ScriptObjectData::base_new(
+            Some(base_proto),
+            ScriptObjectClass::InstancePrototype(class, scope),
+        );
+
+        Ok(NamespaceObject(GcCell::allocate(
+            mc,
+            NamespaceObjectData {
+                base,
+                namespace: Namespace::public_namespace(),
+            },
+        ))
+        .into())
+    }
 }
 
 impl<'gc> TObject<'gc> for NamespaceObject<'gc> {
     impl_avm2_custom_object!(base);
+    impl_avm2_custom_object_properties!(base);
 
     fn to_string(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         Ok(self.0.read().namespace.as_uri().into())

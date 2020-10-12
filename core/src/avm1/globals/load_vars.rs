@@ -233,9 +233,9 @@ fn send<'gc>(
         .coerce_to_string(activation)?;
     let method = NavigationMethod::from_method_str(&method_name).unwrap_or(NavigationMethod::POST);
 
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
-    let mut form_values = HashMap::new();
+    let mut form_values = IndexMap::new();
     let keys = this.get_keys(activation);
 
     for k in keys {
@@ -244,7 +244,7 @@ fn send<'gc>(
         form_values.insert(
             k,
             v.ok()
-                .unwrap_or_else(|| Value::Undefined)
+                .unwrap_or(Value::Undefined)
                 .coerce_to_string(activation)
                 .unwrap_or_else(|_| "undefined".into())
                 .to_string(),
@@ -290,9 +290,9 @@ fn to_string<'gc>(
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
-    let mut form_values = HashMap::new();
+    let mut form_values = IndexMap::new();
     let keys = this.get_keys(activation);
 
     for k in keys {
@@ -302,7 +302,7 @@ fn to_string<'gc>(
         form_values.insert(
             k,
             v.ok()
-                .unwrap_or_else(|| Value::Undefined)
+                .unwrap_or(Value::Undefined)
                 .coerce_to_string(activation)
                 .unwrap_or_else(|_| "undefined".into())
                 .to_string(),

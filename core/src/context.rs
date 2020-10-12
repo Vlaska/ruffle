@@ -2,12 +2,15 @@
 use crate::avm1;
 
 use crate::avm1::globals::system::SystemProperties;
-use crate::avm1::{Avm1, Object, Timers, Value};
-use crate::avm2::Avm2;
+use crate::avm1::{Avm1, Object as Avm1Object, Timers, Value as Avm1Value};
+use crate::avm2::{Avm2, Object as Avm2Object, Value as Avm2Value};
 use crate::backend::input::InputBackend;
+use crate::backend::locale::LocaleBackend;
+use crate::backend::log::LogBackend;
 use crate::backend::storage::StorageBackend;
 use crate::backend::{audio::AudioBackend, navigator::NavigatorBackend, render::RenderBackend};
 use crate::display_object::EditText;
+use crate::external::ExternalInterface;
 use crate::library::Library;
 use crate::loader::LoadManager;
 use crate::player::Player;
@@ -16,9 +19,11 @@ use crate::tag_utils::{SwfMovie, SwfSlice};
 use crate::transform::TransformStack;
 use core::fmt;
 use gc_arena::{Collect, CollectionContext, MutationContext};
+use instant::Instant;
 use rand::rngs::SmallRng;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 /// `UpdateContext` holds shared data that is used by the various subsystems of Ruffle.
 /// `Player` crates this when it begins a tick and passes it through the call stack to
@@ -67,6 +72,12 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     /// The storage backend, used for storing persistent state
     pub storage: &'a mut dyn StorageBackend,
 
+    /// The locale backend, used for localisation and personalisation
+    pub locale: &'a mut dyn LocaleBackend,
+
+    /// The logging backend, used for trace output capturing
+    pub log: &'a mut dyn LogBackend,
+
     /// The RNG, used by the AVM `RandomNumber` opcode,  `Math.random(),` and `random()`.
     pub rng: &'a mut SmallRng,
 
@@ -108,7 +119,7 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     pub instance_counter: &'a mut i32,
 
     /// Shared objects cache
-    pub shared_objects: &'a mut HashMap<String, Object<'gc>>,
+    pub shared_objects: &'a mut HashMap<String, Avm1Object<'gc>>,
 
     /// Text fields with unbound variable bindings.
     pub unbound_text_fields: &'a mut Vec<EditText<'gc>>,
@@ -121,6 +132,16 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
 
     /// The AVM2 global state.
     pub avm2: &'a mut Avm2<'gc>,
+
+    /// External interface for (for example) Javascript <-> Actionscript interaction
+    pub external_interface: &'a mut ExternalInterface<'gc>,
+
+    /// The instant at which the current update started.
+    pub update_start: Instant,
+
+    /// The maximum amount of time that can be called before a `Error::ExecutionTimeout`
+    /// is raised. This defaults to 15 seconds but can be changed.
+    pub max_execution_duration: Duration,
 }
 
 unsafe impl<'a, 'gc, 'gc_context> Collect for UpdateContext<'a, 'gc, 'gc_context> {
@@ -176,6 +197,8 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
             audio: self.audio,
             navigator: self.navigator,
             renderer: self.renderer,
+            locale: self.locale,
+            log: self.log,
             input: self.input,
             storage: self.storage,
             rng: self.rng,
@@ -194,6 +217,9 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
             timers: self.timers,
             avm1: self.avm1,
             avm2: self.avm2,
+            external_interface: self.external_interface,
+            update_start: self.update_start,
+            max_execution_duration: self.max_execution_duration,
         }
     }
 }
@@ -310,29 +336,29 @@ pub enum ActionType<'gc> {
 
     /// Construct a movie with a custom class or on(construct) events
     Construct {
-        constructor: Option<Object<'gc>>,
+        constructor: Option<Avm1Object<'gc>>,
         events: Vec<SwfSlice>,
     },
 
     /// An event handler method, e.g. `onEnterFrame`.
     Method {
-        object: Object<'gc>,
+        object: Avm1Object<'gc>,
         name: &'static str,
-        args: Vec<Value<'gc>>,
+        args: Vec<Avm1Value<'gc>>,
     },
 
     /// A system listener method,
     NotifyListeners {
         listener: &'static str,
         method: &'static str,
-        args: Vec<Value<'gc>>,
+        args: Vec<Avm1Value<'gc>>,
     },
 
-    /// AVM2 ABC files.
-    DoABC {
-        name: String,
-        is_lazy_initialize: bool,
-        abc: SwfSlice,
+    /// An AVM2 callable, e.g. a frame script or event handler.
+    Callable2 {
+        callable: Avm2Object<'gc>,
+        reciever: Option<Avm2Object<'gc>>,
+        args: Vec<Avm2Value<'gc>>,
     },
 }
 
@@ -367,15 +393,15 @@ impl fmt::Debug for ActionType<'_> {
                 .field("method", method)
                 .field("args", args)
                 .finish(),
-            ActionType::DoABC {
-                name,
-                is_lazy_initialize,
-                abc,
+            ActionType::Callable2 {
+                callable,
+                reciever,
+                args,
             } => f
-                .debug_struct("ActionType::DoABC")
-                .field("name", name)
-                .field("is_lazy_initialize", is_lazy_initialize)
-                .field("bytecode", abc)
+                .debug_struct("ActionType::Callable2")
+                .field("callable", callable)
+                .field("reciever", reciever)
+                .field("args", args)
                 .finish(),
         }
     }

@@ -7,6 +7,7 @@ use crate::context::{ActionQueue, ActionType};
 use crate::display_object::{DisplayObject, MorphShape, TDisplayObject};
 use crate::player::{Player, NEWEST_PLAYER_VERSION};
 use crate::tag_utils::SwfMovie;
+use crate::vminterface::Instantiator;
 use crate::xml::XMLNode;
 use gc_arena::{Collect, CollectionContext, MutationContext};
 use generational_arena::{Arena, Index};
@@ -276,7 +277,7 @@ pub enum Loader<'gc> {
         /// into a clip that has not yet fired it's Load event causes the
         /// loader to be prematurely removed. This flag is only set when either
         /// the movie has been replaced (and thus Load events can be trusted)
-        /// or an error has occured (in which case we don't care about the
+        /// or an error has occurred (in which case we don't care about the
         /// loader anymore).
         load_complete: bool,
     },
@@ -460,6 +461,8 @@ impl<'gc> Loader<'gc> {
                     .lock()
                     .expect("Could not lock player!!")
                     .update(|uc| {
+                        uc.library.library_for_movie_mut(movie.clone());
+
                         let (clip, broadcaster) = match uc.load_manager.get_loader(handle) {
                             Some(Loader::Movie {
                                 target_clip,
@@ -491,7 +494,7 @@ impl<'gc> Loader<'gc> {
                             .expect("Attempted to load movie into not movie clip");
 
                         mc.replace_with_movie(uc.gc_context, Some(movie.clone()));
-                        mc.post_instantiation(uc, clip, None, false);
+                        mc.post_instantiation(uc, clip, None, Instantiator::Movie, false);
 
                         let mut morph_shapes = fnv::FnvHashMap::default();
                         mc.preload(uc, &mut morph_shapes);

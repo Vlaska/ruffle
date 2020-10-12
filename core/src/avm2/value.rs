@@ -8,6 +8,7 @@ use crate::avm2::script::TranslationUnit;
 use crate::avm2::string::AvmString;
 use crate::avm2::{Avm2, Error};
 use crate::ecma_conversions::{f64_to_wrapping_i32, f64_to_wrapping_u32};
+use enumset::{EnumSet, EnumSetType};
 use gc_arena::{Collect, MutationContext};
 use std::cell::Ref;
 use std::f64::NAN;
@@ -222,6 +223,31 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    /// Get the numerical portion of the value, if it exists.
+    ///
+    /// This function performs no numerical coercion, nor are user-defined
+    /// object methods called. This should only be used if you specifically
+    /// need the behavior of only handling actual numbers; otherwise you should
+    /// use the appropriate `coerce_to_` method.
+    pub fn as_number(&self, mc: MutationContext<'gc, '_>) -> Result<f64, Error> {
+        match self {
+            // Methods that look for numbers in Flash Player don't seem to care
+            // about user-defined `valueOf` implementations. This code upholds
+            // that limitation as long as `TObject`'s `value_of` method also
+            // does not call user-defined functions.
+            Value::Object(num) => match num.value_of(mc)? {
+                Value::Number(num) => Ok(num),
+                Value::Integer(num) => Ok(num as f64),
+                Value::Unsigned(num) => Ok(num as f64),
+                _ => Err(format!("Expected Number, int, or uint, found {:?}", self).into()),
+            },
+            Value::Number(num) => Ok(*num),
+            Value::Integer(num) => Ok(*num as f64),
+            Value::Unsigned(num) => Ok(*num as f64),
+            _ => Err(format!("Expected Number, int, or uint, found {:?}", self).into()),
+        }
+    }
+
     /// Yields `true` if the given value is a primitive value.
     ///
     /// Note: Boxed primitive values are not considered primitive - it is
@@ -374,10 +400,10 @@ impl<'gc> Value<'gc> {
 
                     n
                 } else {
-                    let (sign, digits) = if strim.starts_with('+') {
-                        (1.0, &strim[1..])
-                    } else if strim.starts_with('-') {
-                        (-1.0, &strim[1..])
+                    let (sign, digits) = if let Some(stripped) = strim.strip_prefix('+') {
+                        (1.0, stripped)
+                    } else if let Some(stripped) = strim.strip_prefix('-') {
+                        (-1.0, stripped)
                     } else {
                         (1.0, strim)
                     };
@@ -420,7 +446,21 @@ impl<'gc> Value<'gc> {
         Ok(f64_to_wrapping_i32(self.coerce_to_number(activation)?))
     }
 
-    /// Mininum number of digits after which numbers are formatted as
+    /// Coerce the value to an EnumSet of a particular type.
+    ///
+    /// This function will ignore invalid bits of the value when interpreting
+    /// the enum.
+    pub fn coerce_to_enumset<E>(
+        &self,
+        activation: &mut Activation<'_, 'gc, '_>,
+    ) -> Result<EnumSet<E>, Error>
+    where
+        E: EnumSetType,
+    {
+        Ok(EnumSet::from_u32_truncated(self.coerce_to_u32(activation)?))
+    }
+
+    /// Minimum number of digits after which numbers are formatted as
     /// exponential strings.
     const MIN_DIGITS: f64 = -6.0;
 

@@ -3,17 +3,24 @@
 //! Trace output can be compared with correct output from the official Flash Payer.
 
 use approx::assert_abs_diff_eq;
-use log::{Metadata, Record};
+use ruffle_core::backend::locale::NullLocaleBackend;
+use ruffle_core::backend::log::LogBackend;
 use ruffle_core::backend::navigator::{NullExecutor, NullNavigatorBackend};
 use ruffle_core::backend::storage::MemoryStorageBackend;
 use ruffle_core::backend::{
     audio::NullAudioBackend, input::NullInputBackend, render::NullRenderer,
 };
+use ruffle_core::context::UpdateContext;
+use ruffle_core::external::Value as ExternalValue;
+use ruffle_core::external::{ExternalInterfaceMethod, ExternalInterfaceProvider};
 use ruffle_core::tag_utils::SwfMovie;
 use ruffle_core::Player;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -28,6 +35,8 @@ macro_rules! swf_tests {
                 concat!("tests/swfs/", $path, "/test.swf"),
                 $num_frames,
                 concat!("tests/swfs/", $path, "/output.txt"),
+                |_| Ok(()),
+                |_| Ok(()),
             )
         }
         )*
@@ -45,7 +54,9 @@ macro_rules! swf_tests_approx {
                 concat!("tests/swfs/", $path, "/test.swf"),
                 $num_frames,
                 concat!("tests/swfs/", $path, "/output.txt"),
-                $epsilon
+                $epsilon,
+                |_| Ok(()),
+                |_| Ok(()),
             )
         }
         )*
@@ -79,6 +90,7 @@ swf_tests! {
     (matrix, "avm1/matrix", 1),
     (point, "avm1/point", 1),
     (rectangle, "avm1/rectangle", 1),
+    (date_is_special, "avm1/date_is_special", 1),
     (goto_advance1, "avm1/goto_advance1", 2),
     (goto_advance2, "avm1/goto_advance2", 2),
     (goto_both_ways1, "avm1/goto_both_ways1", 2),
@@ -119,6 +131,7 @@ swf_tests! {
     (object_prototypes, "avm1/object_prototypes", 1),
     (movieclip_prototype_extension, "avm1/movieclip_prototype_extension", 1),
     (movieclip_hittest, "avm1/movieclip_hittest", 1),
+    (movieclip_hittest_shapeflag, "avm1/movieclip_hittest_shapeflag", 10),
     #[ignore] (textfield_text, "avm1/textfield_text", 1),
     (recursive_prototypes, "avm1/recursive_prototypes", 2),
     (stage_object_children, "avm1/stage_object_children", 2),
@@ -148,7 +161,8 @@ swf_tests! {
     (slash_syntax, "avm1/slash_syntax", 2),
     (strictequals_swf6, "avm1/strictequals_swf6", 1),
     (string_methods, "avm1/string_methods", 1),
-    (target_path, "avm1/target_path", 1),
+    (string_ops_swf6, "avm1/string_ops_swf6", 1),
+    (path_string, "avm1/path_string", 1),
     (global_is_bare, "avm1/global_is_bare", 1),
     (primitive_type_globals, "avm1/primitive_type_globals", 1),
     (primitive_instanceof, "avm1/primitive_instanceof", 1),
@@ -214,6 +228,9 @@ swf_tests! {
     (as1_constructor_v6, "avm1/as1_constructor_v6", 1),
     (as1_constructor_v7, "avm1/as1_constructor_v7", 1),
     (issue_710, "avm1/issue_710", 1),
+    (issue_1086, "avm1/issue_1086", 1),
+    (issue_1104, "avm1/issue_1104", 3),
+    (function_as_function, "avm1/function_as_function", 1),
     (infinite_recursion_function, "avm1/infinite_recursion_function", 1),
     (infinite_recursion_function_in_setter, "avm1/infinite_recursion_function_in_setter", 1),
     (infinite_recursion_virtual_property, "avm1/infinite_recursion_virtual_property", 1),
@@ -240,6 +257,28 @@ swf_tests! {
     (array_apply, "avm1/array_constructor", 1),
     (object_function, "avm1/object_function", 1),
     (parse_int, "avm1/parse_int", 1),
+    (bitmap_filter, "avm1/bitmap_filter", 1),
+    (blur_filter, "avm1/blur_filter", 1),
+    (date_constructor, "avm1/date/constructor", 1),
+    (date_utc, "avm1/date/UTC", 1),
+    (date_set_date, "avm1/date/setDate", 1),
+    (date_set_full_year, "avm1/date/setFullYear", 1),
+    (date_set_hours, "avm1/date/setHours", 1),
+    (date_set_milliseconds, "avm1/date/setMilliseconds", 1),
+    (date_set_minutes, "avm1/date/setMinutes", 1),
+    (date_set_month, "avm1/date/setMonth", 1),
+    (date_set_seconds, "avm1/date/setSeconds", 1),
+    (date_set_time, "avm1/date/setTime", 1),
+    (date_set_utc_date, "avm1/date/setUTCDate", 1),
+    (date_set_utc_full_year, "avm1/date/setUTCFullYear", 1),
+    (date_set_utc_hours, "avm1/date/setUTCHours", 1),
+    (date_set_utc_milliseconds, "avm1/date/setUTCMilliseconds", 1),
+    (date_set_utc_minutes, "avm1/date/setUTCMinutes", 1),
+    (date_set_utc_month, "avm1/date/setUTCMonth", 1),
+    (date_set_utc_seconds, "avm1/date/setUTCSeconds", 1),
+    (date_set_year, "avm1/date/setYear", 1),
+    (this_scoping, "avm1/this_scoping", 1),
+    (bevel_filter, "avm1/bevel_filter", 1),
     (as3_hello_world, "avm2/hello_world", 1),
     (as3_function_call, "avm2/function_call", 1),
     (as3_function_call_via_call, "avm2/function_call_via_call", 1),
@@ -294,6 +333,75 @@ swf_tests! {
     (as3_lessequals, "avm2/lessequals", 1),
     (as3_lessthan, "avm2/lessthan", 1),
     (nested_textfields_in_buttons, "avm1/nested_textfields_in_buttons", 1),
+    (conflicting_instance_names, "avm1/conflicting_instance_names", 6),
+    (button_children, "avm1/button_children", 1),
+    (transform, "avm1/transform", 1),
+    (target_path, "avm1/target_path", 1),
+    (remove_movie_clip, "avm1/remove_movie_clip", 1),
+    (as3_add, "avm2/add", 1),
+    (as3_bitand, "avm2/bitand", 1),
+    (as3_bitnot, "avm2/bitnot", 1),
+    (as3_declocal, "avm2/declocal", 1),
+    (as3_declocal_i, "avm2/declocal_i", 1),
+    (as3_decrement, "avm2/decrement", 1),
+    (as3_decrement_i, "avm2/decrement_i", 1),
+    (as3_inclocal, "avm2/inclocal", 1),
+    (as3_inclocal_i, "avm2/inclocal_i", 1),
+    (as3_increment, "avm2/increment", 1),
+    (as3_increment_i, "avm2/increment_i", 1),
+    (as3_lshift, "avm2/lshift", 1),
+    (as3_modulo, "avm2/modulo", 1),
+    (as3_multiply, "avm2/multiply", 1),
+    (as3_negate, "avm2/negate", 1),
+    (as3_rshift, "avm2/rshift", 1),
+    (as3_subtract, "avm2/subtract", 1),
+    (as3_urshift, "avm2/urshift", 1),
+    (as3_in, "avm2/in", 1),
+    (as3_array_constr, "avm2/array_constr", 1),
+    (as3_array_access, "avm2/array_access", 1),
+    (as3_array_storage, "avm2/array_storage", 1),
+    (as3_array_delete, "avm2/array_delete", 1),
+    (as3_array_holes, "avm2/array_holes", 1),
+    (as3_array_literal, "avm2/array_literal", 1),
+    (as3_array_concat, "avm2/array_concat", 1),
+    (as3_array_tostring, "avm2/array_tostring", 1),
+    (as3_array_tolocalestring, "avm2/array_tolocalestring", 1),
+    (as3_array_valueof, "avm2/array_valueof", 1),
+    (as3_array_join, "avm2/array_join", 1),
+    (as3_array_foreach, "avm2/array_foreach", 1),
+    (as3_array_map, "avm2/array_map", 1),
+    (as3_array_filter, "avm2/array_filter", 1),
+    (as3_array_every, "avm2/array_every", 1),
+    (as3_array_some, "avm2/array_some", 1),
+    (as3_array_indexof, "avm2/array_indexof", 1),
+    (as3_array_lastindexof, "avm2/array_lastindexof", 1),
+    (as3_array_push, "avm2/array_push", 1),
+    (as3_array_pop, "avm2/array_pop", 1),
+    (as3_array_reverse, "avm2/array_reverse", 1),
+    (as3_array_shift, "avm2/array_shift", 1),
+    (as3_array_unshift, "avm2/array_unshift", 1),
+    (as3_array_slice, "avm2/array_slice", 1),
+    (as3_array_splice, "avm2/array_splice", 1),
+    (as3_array_sort, "avm2/array_sort", 1),
+    (as3_array_sorton, "avm2/array_sorton", 1),
+    (as3_array_hasownproperty, "avm2/array_hasownproperty", 1),
+    (stage_property_representation, "avm1/stage_property_representation", 1),
+    (as3_timeline_scripts, "avm2/timeline_scripts", 3),
+    (as3_movieclip_properties, "avm2/movieclip_properties", 4),
+    (as3_movieclip_gotoandplay, "avm2/movieclip_gotoandplay", 5),
+    (as3_movieclip_gotoandstop, "avm2/movieclip_gotoandstop", 5),
+    (as3_movieclip_stop, "avm2/movieclip_stop", 5),
+    (as3_movieclip_prev_frame, "avm2/movieclip_prev_frame", 5),
+    (as3_movieclip_next_frame, "avm2/movieclip_next_frame", 5),
+    (as3_movieclip_prev_scene, "avm2/movieclip_prev_scene", 5),
+    (as3_movieclip_next_scene, "avm2/movieclip_next_scene", 5),
+    (as3_framelabel_constr, "avm2/framelabel_constr", 5),
+    (as3_movieclip_currentlabels, "avm2/movieclip_currentlabels", 5),
+    (as3_scene_constr, "avm2/scene_constr", 5),
+    (as3_movieclip_currentscene, "avm2/movieclip_currentscene", 5),
+    (as3_movieclip_scenes, "avm2/movieclip_scenes", 5),
+    (as3_movieclip_play, "avm2/movieclip_play", 5),
+    (as3_movieclip_constr, "avm2/movieclip_constr", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -301,7 +409,7 @@ swf_tests! {
 // Some will probably always need to be approx. (if they rely on trig functions, etc.)
 swf_tests_approx! {
     (local_to_global, "avm1/local_to_global", 1, 0.051),
-    (stage_object_properties, "avm1/stage_object_properties", 4, 0.051),
+    (stage_object_properties, "avm1/stage_object_properties", 5, 0.051),
     (stage_object_properties_swf6, "avm1/stage_object_properties_swf6", 4, 0.051),
     (movieclip_getbounds, "avm1/movieclip_getbounds", 1, 0.051),
     (edittext_letter_spacing, "avm1/edittext_letter_spacing", 1, 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
@@ -311,6 +419,77 @@ swf_tests_approx! {
     (edittext_bullet, "avm1/edittext_bullet", 1, 3.0),
     (edittext_underline, "avm1/edittext_underline", 1, 4.0),
     (as3_coerce_string_precision, "avm2/coerce_string_precision", 1, 10_000_000.0),
+    (as3_divide, "avm2/divide", 1, 0.0), // TODO: Discrepancy in float formatting.
+}
+
+#[test]
+fn external_interface_avm1() -> Result<(), Error> {
+    test_swf(
+        "tests/swfs/avm1/external_interface/test.swf",
+        1,
+        "tests/swfs/avm1/external_interface/output.txt",
+        |player| {
+            player
+                .lock()
+                .unwrap()
+                .add_external_interface(Box::new(ExternalInterfaceTestProvider::new()));
+            Ok(())
+        },
+        |player| {
+            let mut player_locked = player.lock().unwrap();
+
+            let parroted =
+                player_locked.call_internal_interface("parrot", vec!["Hello World!".into()]);
+            player_locked.log_backend().avm_trace(&format!(
+                "After calling `parrot` with a string: {:?}",
+                parroted
+            ));
+
+            let mut nested = BTreeMap::new();
+            nested.insert(
+                "list".to_string(),
+                vec![
+                    "string".into(),
+                    100.into(),
+                    false.into(),
+                    ExternalValue::Object(BTreeMap::new()),
+                ]
+                .into(),
+            );
+
+            let mut root = BTreeMap::new();
+            root.insert("number".to_string(), (-500.1).into());
+            root.insert("string".to_string(), "A string!".into());
+            root.insert("true".to_string(), true.into());
+            root.insert("false".to_string(), false.into());
+            root.insert("null".to_string(), ExternalValue::Null);
+            root.insert("nested".to_string(), nested.into());
+            let result = player_locked
+                .call_internal_interface("callWith", vec!["trace".into(), root.into()]);
+            player_locked.log_backend().avm_trace(&format!(
+                "After calling `callWith` with a complex payload: {:?}",
+                result
+            ));
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn timeout_avm1() -> Result<(), Error> {
+    test_swf(
+        "tests/swfs/avm1/timeout/test.swf",
+        1,
+        "tests/swfs/avm1/timeout/output.txt",
+        |player| {
+            player
+                .lock()
+                .unwrap()
+                .set_max_execution_duration(Duration::from_secs(5));
+            Ok(())
+        },
+        |_| Ok(()),
+    )
 }
 
 /// Wrapper around string slice that makes debug output `{:?}` to print string same way as `{}`.
@@ -343,10 +522,21 @@ macro_rules! assert_eq {
 
 /// Loads an SWF and runs it through the Ruffle core for a number of frames.
 /// Tests that the trace output matches the given expected output.
-fn test_swf(swf_path: &str, num_frames: u32, expected_output_path: &str) -> Result<(), Error> {
-    let expected_output = std::fs::read_to_string(expected_output_path)?.replace("\r\n", "\n");
+fn test_swf(
+    swf_path: &str,
+    num_frames: u32,
+    expected_output_path: &str,
+    before_start: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
+    before_end: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut expected_output = std::fs::read_to_string(expected_output_path)?.replace("\r\n", "\n");
 
-    let trace_log = run_swf(swf_path, num_frames)?;
+    // Strip a trailing newline if it has one.
+    if expected_output.ends_with('\n') {
+        expected_output = expected_output[0..expected_output.len() - "\n".len()].to_string();
+    }
+
+    let trace_log = run_swf(swf_path, num_frames, before_start, before_end)?;
     assert_eq!(
         trace_log, expected_output,
         "ruffle output != flash player output"
@@ -363,9 +553,17 @@ fn test_swf_approx(
     num_frames: u32,
     expected_output_path: &str,
     epsilon: f64,
+    before_start: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
+    before_end: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let trace_log = run_swf(swf_path, num_frames)?;
-    let expected_data = std::fs::read_to_string(expected_output_path)?;
+    let trace_log = run_swf(swf_path, num_frames, before_start, before_end)?;
+    let mut expected_data = std::fs::read_to_string(expected_output_path)?;
+
+    // Strip a trailing newline if it has one.
+    if expected_data.ends_with('\n') {
+        expected_data = expected_data[0..expected_data.len() - "\n".len()].to_string();
+    }
+
     std::assert_eq!(
         trace_log.lines().count(),
         expected_data.lines().count(),
@@ -375,6 +573,11 @@ fn test_swf_approx(
     for (actual, expected) in trace_log.lines().zip(expected_data.lines()) {
         // If these are numbers, compare using approx_eq.
         if let (Ok(actual), Ok(expected)) = (actual.parse::<f64>(), expected.parse::<f64>()) {
+            // NaNs should be able to pass in an approx test.
+            if actual.is_nan() && expected.is_nan() {
+                continue;
+            }
+
             // TODO: Lower this epsilon as the accuracy of the properties improves.
             assert_abs_diff_eq!(actual, expected, epsilon = epsilon);
         } else {
@@ -386,21 +589,34 @@ fn test_swf_approx(
 
 /// Loads an SWF and runs it through the Ruffle core for a number of frames.
 /// Tests that the trace output matches the given expected output.
-fn run_swf(swf_path: &str, num_frames: u32) -> Result<String, Error> {
-    let _ = log::set_logger(&TRACE_LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
-
+fn run_swf(
+    swf_path: &str,
+    num_frames: u32,
+    before_start: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
+    before_end: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
+) -> Result<String, Error> {
     let base_path = Path::new(swf_path).parent().unwrap();
     let (mut executor, channel) = NullExecutor::new();
     let movie = SwfMovie::from_path(swf_path)?;
     let frame_time = 1000.0 / movie.header().frame_rate as f64;
+    let trace_output = Rc::new(RefCell::new(Vec::new()));
+
     let player = Player::new(
         Box::new(NullRenderer),
         Box::new(NullAudioBackend::new()),
         Box::new(NullNavigatorBackend::with_base_path(base_path, channel)),
         Box::new(NullInputBackend::new()),
         Box::new(MemoryStorageBackend::default()),
+        Box::new(NullLocaleBackend::new()),
+        Box::new(TestLogBackend::new(trace_output.clone())),
     )?;
     player.lock().unwrap().set_root_movie(Arc::new(movie));
+    player
+        .lock()
+        .unwrap()
+        .set_max_execution_duration(Duration::from_secs(120));
+
+    before_start(player.clone())?;
 
     for _ in 0..num_frames {
         player.lock().unwrap().run_frame();
@@ -408,34 +624,75 @@ fn run_swf(swf_path: &str, num_frames: u32) -> Result<String, Error> {
         executor.poll_all().unwrap();
     }
 
+    before_end(player)?;
+
     executor.block_all().unwrap();
 
-    Ok(trace_log())
+    let trace = trace_output.borrow().join("\n");
+    Ok(trace)
 }
 
-thread_local! {
-    static TRACE_LOG: RefCell<String> = RefCell::new(String::new());
+struct TestLogBackend {
+    trace_output: Rc<RefCell<Vec<String>>>,
 }
 
-static TRACE_LOGGER: TraceLogger = TraceLogger;
-
-/// `TraceLogger` captures output from AVM trace actions into a String.
-struct TraceLogger;
-
-fn trace_log() -> String {
-    TRACE_LOG.with(|log| log.borrow().clone())
-}
-
-impl log::Log for TraceLogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.target() == "avm_trace"
+impl TestLogBackend {
+    pub fn new(trace_output: Rc<RefCell<Vec<String>>>) -> Self {
+        Self { trace_output }
     }
+}
 
-    fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            TRACE_LOG.with(|log| log.borrow_mut().push_str(&format!("{}\n", record.args())));
+impl LogBackend for TestLogBackend {
+    fn avm_trace(&self, message: &str) {
+        self.trace_output.borrow_mut().push(message.to_string());
+    }
+}
+
+#[derive(Default)]
+pub struct ExternalInterfaceTestProvider {}
+
+impl ExternalInterfaceTestProvider {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
+fn do_trace(context: &mut UpdateContext<'_, '_, '_>, args: &[ExternalValue]) -> ExternalValue {
+    context
+        .log
+        .avm_trace(&format!("[ExternalInterface] trace: {:?}", args));
+    "Traced!".into()
+}
+
+fn do_ping(context: &mut UpdateContext<'_, '_, '_>, _args: &[ExternalValue]) -> ExternalValue {
+    context.log.avm_trace("[ExternalInterface] ping");
+    "Pong!".into()
+}
+
+fn do_reentry(context: &mut UpdateContext<'_, '_, '_>, _args: &[ExternalValue]) -> ExternalValue {
+    context
+        .log
+        .avm_trace("[ExternalInterface] starting reentry");
+    if let Some(callback) = context.external_interface.get_callback("callWith") {
+        callback.call(
+            context,
+            "callWith",
+            vec!["trace".into(), "successful reentry!".into()],
+        )
+    } else {
+        ExternalValue::Null
+    }
+}
+
+impl ExternalInterfaceProvider for ExternalInterfaceTestProvider {
+    fn get_method(&self, name: &str) -> Option<Box<dyn ExternalInterfaceMethod>> {
+        match name {
+            "trace" => Some(Box::new(do_trace)),
+            "ping" => Some(Box::new(do_ping)),
+            "reentry" => Some(Box::new(do_reentry)),
+            _ => None,
         }
     }
 
-    fn flush(&self) {}
+    fn on_callback_available(&self, _name: &str) {}
 }

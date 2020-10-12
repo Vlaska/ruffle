@@ -77,21 +77,21 @@ pub struct ScriptObjectData<'gc> {
 impl<'gc> TObject<'gc> for ScriptObject<'gc> {
     fn get_property_local(
         self,
-        reciever: Object<'gc>,
+        receiver: Object<'gc>,
         name: &QName<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error> {
         let rv = self
             .0
             .read()
-            .get_property_local(reciever, name, activation)?;
+            .get_property_local(receiver, name, activation)?;
 
         rv.resolve(activation)
     }
 
     fn set_property_local(
         self,
-        reciever: Object<'gc>,
+        receiver: Object<'gc>,
         name: &QName<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -99,7 +99,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         let rv = self
             .0
             .write(activation.context.gc_context)
-            .set_property_local(reciever, name, value, activation)?;
+            .set_property_local(receiver, name, value, activation)?;
 
         rv.resolve(activation)?;
 
@@ -108,7 +108,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
 
     fn init_property_local(
         self,
-        reciever: Object<'gc>,
+        receiver: Object<'gc>,
         name: &QName<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -116,7 +116,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         let rv = self
             .0
             .write(activation.context.gc_context)
-            .init_property_local(reciever, name, value, activation)?;
+            .init_property_local(receiver, name, value, activation)?;
 
         rv.resolve(activation)?;
 
@@ -263,8 +263,12 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         ))
     }
 
-    fn to_string(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
-        Ok("[object Object]".into())
+    fn to_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
+        if let Some(class) = self.as_proto_class() {
+            Ok(AvmString::new(mc, format!("[object {}]", class.read().name().local_name())).into())
+        } else {
+            Ok("[object Object]".into())
+        }
     }
 
     fn value_of(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
@@ -415,14 +419,14 @@ impl<'gc> ScriptObjectData<'gc> {
 
     pub fn get_property_local(
         &self,
-        reciever: Object<'gc>,
+        receiver: Object<'gc>,
         name: &QName<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<ReturnValue<'gc>, Error> {
         let prop = self.values.get(name);
 
         if let Some(prop) = prop {
-            prop.get(reciever, activation.base_proto().or(self.proto))
+            prop.get(receiver, activation.base_proto().or(self.proto))
         } else {
             Ok(Value::Undefined.into())
         }
@@ -430,7 +434,7 @@ impl<'gc> ScriptObjectData<'gc> {
 
     pub fn set_property_local(
         &mut self,
-        reciever: Object<'gc>,
+        receiver: Object<'gc>,
         name: &QName<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -451,7 +455,7 @@ impl<'gc> ScriptObjectData<'gc> {
         } else if self.values.contains_key(name) {
             let prop = self.values.get_mut(name).unwrap();
             let proto = self.proto;
-            prop.set(reciever, activation.base_proto().or(proto), value)
+            prop.set(receiver, activation.base_proto().or(proto), value)
         } else {
             //TODO: Not all classes are dynamic like this
             self.enumerants.push(name.clone());
@@ -464,7 +468,7 @@ impl<'gc> ScriptObjectData<'gc> {
 
     pub fn init_property_local(
         &mut self,
-        reciever: Object<'gc>,
+        receiver: Object<'gc>,
         name: &QName<'gc>,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -475,7 +479,7 @@ impl<'gc> ScriptObjectData<'gc> {
                 Ok(Value::Undefined.into())
             } else {
                 let proto = self.proto;
-                prop.init(reciever, activation.base_proto().or(proto), value)
+                prop.init(receiver, activation.base_proto().or(proto), value)
             }
         } else {
             //TODO: Not all classes are dynamic like this
@@ -654,10 +658,20 @@ impl<'gc> ScriptObjectData<'gc> {
             }
         }
 
-        match self.class {
-            ScriptObjectClass::ClassConstructor(..) => self.resolve_any_trait(local_name),
-            ScriptObjectClass::NoClass => self.resolve_any_trait(local_name),
-            _ => Ok(None),
+        let trait_ns = match self.class {
+            ScriptObjectClass::ClassConstructor(..) => self.resolve_any_trait(local_name)?,
+            ScriptObjectClass::NoClass => self.resolve_any_trait(local_name)?,
+            _ => None,
+        };
+
+        if trait_ns.is_none() {
+            if let Some(proto) = self.proto() {
+                proto.resolve_any(local_name)
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(trait_ns)
         }
     }
 

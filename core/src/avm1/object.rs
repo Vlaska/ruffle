@@ -8,7 +8,11 @@ use crate::avm1::object::value_object::ValueObject;
 use crate::avm1::property::Attribute;
 
 use crate::avm1::activation::Activation;
+use crate::avm1::object::bevel_filter::BevelFilterObject;
+use crate::avm1::object::blur_filter::BlurFilterObject;
 use crate::avm1::object::color_transform_object::ColorTransformObject;
+use crate::avm1::object::date_object::DateObject;
+use crate::avm1::object::transform_object::TransformObject;
 use crate::avm1::object::xml_attributes_object::XMLAttributesObject;
 use crate::avm1::object::xml_idmap_object::XMLIDMapObject;
 use crate::avm1::object::xml_object::XMLObject;
@@ -22,13 +26,17 @@ use ruffle_macros::enum_trait_object;
 use std::borrow::Cow;
 use std::fmt::Debug;
 
+pub mod bevel_filter;
+pub mod blur_filter;
 pub mod color_transform_object;
 mod custom_object;
+pub mod date_object;
 pub mod script_object;
 pub mod shared_object;
 pub mod sound_object;
 pub mod stage_object;
 pub mod super_object;
+pub mod transform_object;
 pub mod value_object;
 pub mod xml_attributes_object;
 pub mod xml_idmap_object;
@@ -51,6 +59,10 @@ pub mod xml_object;
         FunctionObject(FunctionObject<'gc>),
         SharedObject(SharedObject<'gc>),
         ColorTransformObject(ColorTransformObject<'gc>),
+        TransformObject(TransformObject<'gc>),
+        BlurFilterObject(BlurFilterObject<'gc>),
+        BevelFilterObject(BevelFilterObject<'gc>),
+        DateObject(DateObject<'gc>),
     }
 )]
 pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy {
@@ -224,7 +236,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// Attributes can be set, cleared, or left as-is using the pairs of `set_`
     /// and `clear_attributes` parameters.
     fn set_attributes(
-        &mut self,
+        &self,
         gc_context: MutationContext<'gc, '_>,
         name: Option<&str>,
         set_attributes: EnumSet<Attribute>,
@@ -320,11 +332,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn interfaces(&self) -> Vec<Object<'gc>>;
 
     /// Set the interface list for this object. (Only useful for prototypes.)
-    fn set_interfaces(
-        &mut self,
-        gc_context: MutationContext<'gc, '_>,
-        iface_list: Vec<Object<'gc>>,
-    );
+    fn set_interfaces(&self, gc_context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>);
 
     /// Determine if this object is an instance of a class.
     ///
@@ -416,8 +424,28 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         None
     }
 
+    /// Get the underlying `DateObject`, if it exists
+    fn as_date_object(&self) -> Option<DateObject<'gc>> {
+        None
+    }
+
     /// Get the underlying `ColorTransformObject`, if it exists
     fn as_color_transform_object(&self) -> Option<ColorTransformObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `TransformObject`, if it exists
+    fn as_transform_object(&self) -> Option<TransformObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `BlurFilterObject`, if it exists
+    fn as_blur_filter_object(&self) -> Option<BlurFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `BevelFilterObject`, if it exists
+    fn as_bevel_filter_object(&self) -> Option<BevelFilterObject<'gc>> {
         None
     }
 

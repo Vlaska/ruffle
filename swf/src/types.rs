@@ -1,6 +1,6 @@
 //! The data structures used in an Adobe SWF file.
 //!
-//! These structures are documented in the Adobe SWF File Foramt Specification
+//! These structures are documented in the Adobe SWF File Format Specification
 //! version 19 (henceforth SWF19):
 //! https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf
 use enumset::{EnumSet, EnumSetType};
@@ -40,7 +40,7 @@ pub struct Header {
     pub num_frames: u16,
 }
 
-/// The compression foramt used internally by the SWF file.
+/// The compression format used internally by the SWF file.
 ///
 /// The vast majority of SWFs will use zlib compression.
 /// [SWF19 p.27](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=27)
@@ -266,13 +266,13 @@ pub struct PlaceObject {
     pub name: Option<String>,
     pub clip_depth: Option<Depth>,
     pub class_name: Option<String>,
-    pub filters: Vec<Filter>,
+    pub filters: Option<Vec<Filter>>,
     pub background_color: Option<Color>,
-    pub blend_mode: BlendMode,
-    pub clip_actions: Vec<ClipAction>,
+    pub blend_mode: Option<BlendMode>,
+    pub clip_actions: Option<Vec<ClipAction>>,
     pub is_image: bool,
-    pub is_bitmap_cached: bool,
-    pub is_visible: bool,
+    pub is_bitmap_cached: Option<bool>,
+    pub is_visible: Option<bool>,
     pub amf_data: Option<Vec<u8>>,
 }
 
@@ -576,7 +576,7 @@ pub struct SymbolClassLink {
     pub class_name: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Shape {
     pub version: u8,
     pub id: CharacterId,

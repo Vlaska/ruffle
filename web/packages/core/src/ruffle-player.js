@@ -28,6 +28,8 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
         }
 
         self.instance = null;
+        self.allow_script_access = false;
+        self._trace_observer = null;
 
         self.Ruffle = load_ruffle();
 
@@ -129,12 +131,16 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
             console.log("Ruffle instance destroyed.");
         }
 
-        let Ruffle = await this.Ruffle.catch(function (e) {
+        let Ruffle = await this.Ruffle.catch((e) => {
             console.error("Serious error loading Ruffle: " + e);
             throw e;
         });
 
-        this.instance = Ruffle.new(this.container);
+        this.instance = Ruffle.new(
+            this.container,
+            this,
+            this.allow_script_access
+        );
         console.log("New Ruffle instance created.");
     }
 
@@ -165,7 +171,8 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
                 );
             }
         } catch (err) {
-            console.error("Serious error occured loading SWF file: " + err);
+            console.error("Serious error occurred loading SWF file: " + err);
+            this.panic(err);
             throw err;
         }
     }
@@ -175,6 +182,15 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
             this.instance.play();
             if (this.play_button) {
                 this.play_button.style.display = "none";
+            }
+        }
+    }
+
+    pause() {
+        if (this.instance) {
+            this.instance.pause();
+            if (this.play_button) {
+                this.play_button.style.display = "block";
             }
         }
     }
@@ -191,20 +207,26 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
      * @param {String} url The URL to stream.
      */
     async play_swf_data(data) {
-        if (this.isConnected && !this.is_unused_fallback_object()) {
-            console.log("Got SWF data");
+        try {
+            if (this.isConnected && !this.is_unused_fallback_object()) {
+                console.log("Got SWF data");
 
-            await this.ensure_fresh_instance();
-            this.instance.load_data(new Uint8Array(data));
-            console.log("New Ruffle instance created.");
+                await this.ensure_fresh_instance();
+                this.instance.load_data(new Uint8Array(data));
+                console.log("New Ruffle instance created.");
 
-            if (this.play_button) {
-                this.play_button.style.display = "block";
+                if (this.play_button) {
+                    this.play_button.style.display = "block";
+                }
+            } else {
+                console.warn(
+                    "Ignoring attempt to play a disconnected or suspended Ruffle element"
+                );
             }
-        } else {
-            console.warn(
-                "Ignoring attempt to play a disconnected or suspended Ruffle element"
-            );
+        } catch (err) {
+            console.error("Serious error occurred loading SWF file: " + err);
+            this.panic(err);
+            throw err;
         }
     }
 
@@ -261,6 +283,97 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
         }
         return null;
     }
+
+    /*
+     * When a movie presents a new callback through `ExternalInterface.addCallback`,
+     * we are informed so that we can expose the method on any relevant DOM element.
+     */
+    on_callback_available(name) {
+        const instance = this.instance;
+        this[name] = (...args) => {
+            return instance.call_exposed_callback(name, args);
+        };
+    }
+
+    /*
+     * Sets a trace observer on this flash player.
+     *
+     * The observer will be called, as a function, for each message that the playing movie will "trace" (output).
+     */
+    set trace_observer(observer) {
+        this.instance.set_trace_observer(observer);
+    }
+
+    /*
+     * Panics this specific player, forcefully destroying all resources and displays an error message to the user.
+     *
+     * This should be called when something went absolutely, incredibly and disastrously wrong and there is no chance
+     * of recovery.
+     *
+     * Ruffle will attempt to isolate all damage to this specific player instance, but no guarantees can be made if there
+     * was a core issue which triggered the panic. If Ruffle is unable to isolate the cause to a specific player, then
+     * all players will panic and Ruffle will become "poisoned" - no more players will run on this page until it is
+     * reloaded fresh.
+     */
+    panic(error) {
+        // Clears out any existing content (ie play button or canvas) and replaces it with the error screen
+        this.container.innerHTML = `
+            <div id="panic">
+                <div id="panic-title">Something went wrong :(</div>
+                <div id="panic-body">
+                    <p>Ruffle has encountered a major issue whilst trying to display this Flash content.</p>
+                    <p>This isn't supposed to happen, so we'd really appreciate if you could file a bug!</p>
+                </div>
+                <div id="panic-footer">
+                    <ul>
+                        <li><a href="https://github.com/ruffle-rs/ruffle/issues/new">report bug</a></li>
+                        <li><a href="#" id="panic-view-details">view error details</a></li>
+                    </ul>
+                </div>
+            </div>
+        `;
+        this.container.querySelector("#panic-view-details").onclick = () => {
+            let error_text = "# Error Info\n";
+
+            if (error instanceof Error) {
+                error_text += `Error name: ${error.name}\n`;
+                error_text += `Error message: ${error.message}\n`;
+                if (error.stack) {
+                    error_text += `Error stack:\n\`\`\`\n${error.stack}\n\`\`\`\n`;
+                }
+            } else {
+                error_text += `Error: ${error}\n`;
+            }
+
+            error_text += "\n# Player Info\n";
+            error_text += this.debug_player_info();
+
+            error_text += "\n# Page Info\n";
+            error_text += `Page URL: ${document.location.href}\n`;
+
+            error_text += "\n# Browser Info\n";
+            error_text += `Useragent: ${window.navigator.userAgent}\n`;
+            error_text += `OS: ${window.navigator.platform}\n`;
+
+            error_text += "\n# Ruffle Info\n";
+            error_text += `Ruffle version: ${window.RufflePlayer.version}\n`;
+            error_text += `Ruffle source: ${window.RufflePlayer.name}\n`;
+            this.container.querySelector(
+                "#panic-body"
+            ).innerHTML = `<textarea>${error_text}</textarea>`;
+            return false;
+        };
+
+        // Do this last, just in case it causes any cascading issues.
+        if (this.instance) {
+            this.instance.destroy();
+            this.instance = null;
+        }
+    }
+
+    debug_player_info() {
+        return `Allows script access: ${this.allow_script_access}\n`;
+    }
 };
 
 /*
@@ -270,6 +383,7 @@ exports.is_swf_filename = function is_swf_filename(filename) {
     return (
         filename &&
         typeof filename === "string" &&
-        filename.search(/\.swf\s*$/i) >= 0
+        (filename.search(/\.swf(?:[?#]|$)/i) >= 0 ||
+            filename.search(/\.spl(?:[?#]|$)/i) >= 0)
     );
 };

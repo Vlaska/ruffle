@@ -10,7 +10,7 @@ use crate::avm2::string::AvmString;
 use crate::avm2::traits::Trait;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
-use crate::impl_avm2_custom_object;
+use crate::{impl_avm2_custom_object, impl_avm2_custom_object_properties};
 use gc_arena::{Collect, GcCell, MutationContext};
 
 /// An Object which represents a primitive value of some other kind.
@@ -47,13 +47,50 @@ impl<'gc> PrimitiveObject<'gc> {
         ))
         .into())
     }
+
+    /// Construct a primitive subclass.
+    pub fn derive(
+        base_proto: Object<'gc>,
+        mc: MutationContext<'gc, '_>,
+        class: GcCell<'gc, Class<'gc>>,
+        scope: Option<GcCell<'gc, Scope<'gc>>>,
+    ) -> Result<Object<'gc>, Error> {
+        let base = ScriptObjectData::base_new(
+            Some(base_proto),
+            ScriptObjectClass::InstancePrototype(class, scope),
+        );
+
+        Ok(PrimitiveObject(GcCell::allocate(
+            mc,
+            PrimitiveObjectData {
+                base,
+                primitive: Value::Undefined,
+            },
+        ))
+        .into())
+    }
 }
 
 impl<'gc> TObject<'gc> for PrimitiveObject<'gc> {
     impl_avm2_custom_object!(base);
+    impl_avm2_custom_object_properties!(base);
 
     fn to_string(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
         Ok(self.0.read().primitive.clone())
+    }
+
+    fn to_locale_string(&self, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {
+        match self.0.read().primitive.clone() {
+            val @ Value::Integer(_) | val @ Value::Unsigned(_) => Ok(val),
+            _ => {
+                let class_name = self
+                    .as_proto_class()
+                    .map(|c| c.read().name().local_name())
+                    .unwrap_or_else(|| "Object".into());
+
+                Ok(AvmString::new(mc, format!("[object {}]", class_name)).into())
+            }
+        }
     }
 
     fn value_of(&self, _mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, Error> {

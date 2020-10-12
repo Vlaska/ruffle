@@ -26,29 +26,30 @@ console_error_panic_hook = { version = "0.1.1", optional = true }
 console_log = { version = "0.2", optional = true }
 fnv = "1.0.7"
 generational-arena = "0.2.8"
-js-sys = "0.3.44"
+js-sys = "0.3.45"
 log = "0.4"
 ruffle_render_canvas = { path = "../render/canvas", optional = true }
 ruffle_web_common = { path = "common" }
 ruffle_render_webgl = { path = "../render/webgl", optional = true }
 url = "2.1.1"
 wasm-bindgen = "0.2.65"
-wasm-bindgen-futures = "0.4.17"
+wasm-bindgen-futures = "0.4.18"
+chrono = { version = "0.4", features = ["wasmbind"] }
 
 [dependencies.ruffle_core]
 path = "../core"
 default-features = false
-features = ["puremp3"]
+features = ["puremp3", "wasm-bindgen"]
 
 [dependencies.web-sys]
-version = "0.3.44"
+version = "0.3.45"
 features = [
-    "AudioBuffer", "AudioBufferSourceNode", "AudioParam", "AudioProcessingEvent", "AudioContext", "AudioDestinationNode",
+    "AddEventListenerOptions", "AudioBuffer", "AudioBufferSourceNode", "AudioParam", "AudioProcessingEvent", "AudioContext", "AudioDestinationNode",
     "AudioNode", "CanvasRenderingContext2d", "ChannelMergerNode", "ChannelSplitterNode", "CssStyleDeclaration", "Document",
     "Element", "Event", "EventTarget", "GainNode", "HtmlCanvasElement", "HtmlElement", "HtmlImageElement", "MouseEvent",
     "Navigator", "Node", "Performance", "PointerEvent", "ScriptProcessorNode", "UiEvent", "Window", "Location", "HtmlFormElement",
     "KeyboardEvent", "Path2d", "CanvasGradient", "CanvasPattern", "SvgMatrix", "SvgsvgElement", "Response", "Request", "RequestInit",
-    "Blob", "BlobPropertyBag", "Storage"]
+    "Blob", "BlobPropertyBag", "Storage", "WheelEvent"]
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.17"
+wasm-bindgen-test = "0.3.18"

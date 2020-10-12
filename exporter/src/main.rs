@@ -4,10 +4,13 @@ use image::RgbaImage;
 use indicatif::{ProgressBar, ProgressStyle};
 use ruffle_core::backend::audio::NullAudioBackend;
 use ruffle_core::backend::input::NullInputBackend;
+use ruffle_core::backend::locale::NullLocaleBackend;
+use ruffle_core::backend::log::NullLogBackend;
 use ruffle_core::backend::navigator::NullNavigatorBackend;
 use ruffle_core::backend::storage::MemoryStorageBackend;
 use ruffle_core::tag_utils::SwfMovie;
 use ruffle_core::Player;
+use ruffle_render_wgpu::clap::{GraphicsBackend, PowerPreference};
 use ruffle_render_wgpu::target::TextureTarget;
 use ruffle_render_wgpu::WgpuRenderBackend;
 use std::error::Error;
@@ -23,11 +26,11 @@ struct SizeOpt {
     #[clap(long = "scale", default_value = "1.0")]
     scale: f32,
 
-    /// Optionaly override the output width
+    /// Optionally override the output width
     #[clap(long = "width")]
     width: Option<u32>,
 
-    /// Optionaly override the output height
+    /// Optionally override the output height
     #[clap(long = "height")]
     height: Option<u32>,
 }
@@ -48,7 +51,7 @@ struct Opt {
     output_path: Option<PathBuf>,
 
     /// Number of frames to capture per file
-    #[clap(short = "f", long = "frames", default_value = "1")]
+    #[clap(short = 'f', long = "frames", default_value = "1")]
     frames: u32,
 
     /// Number of frames to skip
@@ -61,6 +64,30 @@ struct Opt {
 
     #[clap(flatten)]
     size: SizeOpt,
+
+    /// Type of graphics backend to use. Not all options may be supported by your current system.
+    /// Default will attempt to pick the most supported graphics backend.
+    #[clap(
+        long,
+        short,
+        case_insensitive = true,
+        default_value = "default",
+        arg_enum
+    )]
+    graphics: GraphicsBackend,
+
+    /// Power preference for the graphics device used. High power usage tends to prefer dedicated GPUs,
+    /// whereas a low power usage tends prefer integrated GPUs.
+    /// Default will pick the best device depending on the status of your computer (ie, wall-power
+    /// may choose high, battery power may choose low)
+    #[clap(
+        long,
+        short,
+        case_insensitive = true,
+        default_value = "default",
+        arg_enum
+    )]
+    power: PowerPreference,
 }
 
 fn take_screenshot(
@@ -87,6 +114,8 @@ fn take_screenshot(
         Box::new(NullNavigatorBackend::new()),
         Box::new(NullInputBackend::new()),
         Box::new(MemoryStorageBackend::default()),
+        Box::new(NullLocaleBackend::new()),
+        Box::new(NullLogBackend::new()),
     )?;
 
     player
@@ -332,23 +361,23 @@ fn capture_multiple_swfs(
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opt: Opt = Opt::parse();
-    let adapter = block_on(wgpu::Adapter::request(
-        &wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::Default,
-            compatible_surface: None,
-        },
-        wgpu::BackendBit::PRIMARY,
-    ))
-    .ok_or_else(|| {
-        "This tool requires hardware acceleration, but no compatible graphics device was found."
-    })?;
+    let instance = wgpu::Instance::new(opt.graphics.into());
+    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: opt.power.into(),
+        compatible_surface: None,
+    }))
+    .ok_or(
+        "This tool requires hardware acceleration, but no compatible graphics device was found.",
+    )?;
 
-    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        extensions: wgpu::Extensions {
-            anisotropic_filtering: false,
+    let (device, queue) = block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            features: Default::default(),
+            limits: wgpu::Limits::default(),
+            shader_validation: false,
         },
-        limits: wgpu::Limits::default(),
-    }));
+        None,
+    ))?;
 
     if opt.swf.is_file() {
         capture_single_swf(Rc::new(device), Rc::new(queue), &opt)?;

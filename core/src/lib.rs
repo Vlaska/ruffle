@@ -20,7 +20,7 @@ mod bounding_box;
 mod character;
 mod collect;
 pub mod color_transform;
-mod context;
+pub mod context;
 mod drawing;
 mod ecma_conversions;
 pub mod events;
@@ -35,11 +35,16 @@ pub mod shape_utils;
 pub mod string_utils;
 pub mod tag_utils;
 mod transform;
+mod types;
+mod vminterface;
 mod xml;
 
 pub mod backend;
+pub mod external;
 
+pub use chrono;
 pub use events::PlayerEvent;
+pub use indexmap;
 pub use player::Player;
 pub use swf;
 pub use swf::Color;

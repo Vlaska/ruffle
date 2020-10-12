@@ -605,7 +605,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
     }
 
     fn set_attributes(
-        &mut self,
+        &self,
         gc_context: MutationContext<'gc, '_>,
         name: Option<&str>,
         set_attributes: EnumSet<Attribute>,
@@ -723,7 +723,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         self.0.read().interfaces.clone()
     }
 
-    fn set_interfaces(&mut self, context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>) {
+    fn set_interfaces(&self, context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>) {
         self.0.write(context).interfaces = iface_list;
     }
 
@@ -846,6 +846,8 @@ mod tests {
     use crate::avm2::Avm2;
     use crate::backend::audio::NullAudioBackend;
     use crate::backend::input::NullInputBackend;
+    use crate::backend::locale::NullLocaleBackend;
+    use crate::backend::log::NullLogBackend;
     use crate::backend::navigator::NullNavigatorBackend;
     use crate::backend::render::NullRenderer;
     use crate::backend::storage::MemoryStorageBackend;
@@ -855,10 +857,13 @@ mod tests {
     use crate::loader::LoadManager;
     use crate::prelude::*;
     use crate::tag_utils::{SwfMovie, SwfSlice};
+    use crate::vminterface::Instantiator;
     use gc_arena::rootless_arena;
+    use instant::Instant;
     use rand::{rngs::SmallRng, SeedableRng};
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn with_object<F, R>(swf_version: u8, test: F) -> R
     where
@@ -868,7 +873,7 @@ mod tests {
             let mut avm1 = Avm1::new(gc_context, swf_version);
             let mut avm2 = Avm2::new(gc_context);
             let swf = Arc::new(SwfMovie::empty(swf_version));
-            let mut root: DisplayObject<'_> =
+            let root: DisplayObject<'_> =
                 MovieClip::new(SwfSlice::empty(swf.clone()), gc_context).into();
             root.set_depth(gc_context, 0);
             let mut levels = BTreeMap::new();
@@ -895,6 +900,8 @@ mod tests {
                 library: &mut Library::default(),
                 navigator: &mut NullNavigatorBackend::new(),
                 renderer: &mut NullRenderer::new(),
+                locale: &mut NullLocaleBackend::new(),
+                log: &mut NullLogBackend::new(),
                 system_prototypes: avm1.prototypes().clone(),
                 mouse_hovered_object: None,
                 mouse_position: &(Twips::new(0), Twips::new(0)),
@@ -911,9 +918,12 @@ mod tests {
                 needs_render: &mut false,
                 avm1: &mut avm1,
                 avm2: &mut avm2,
+                external_interface: &mut Default::default(),
+                update_start: Instant::now(),
+                max_execution_duration: Duration::from_secs(15),
             };
 
-            root.post_instantiation(&mut context, root, None, false);
+            root.post_instantiation(&mut context, root, None, Instantiator::Movie, false);
             root.set_name(context.gc_context, "");
 
             let base_clip = *context.levels.get(&0).unwrap();

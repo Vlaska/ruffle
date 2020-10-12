@@ -201,7 +201,7 @@ fn char_at<'gc>(
         string
             .encode_utf16()
             .nth(i as usize)
-            .map(|c| utf16_code_unit_to_char(c).to_string())
+            .map(|c| string_utils::utf16_code_unit_to_char(c).to_string())
             .unwrap_or_default()
     } else {
         "".into()
@@ -257,7 +257,7 @@ fn from_char_code<'gc>(
             // Stop at a null-terminator.
             break;
         }
-        out.push(utf16_code_unit_to_char(i));
+        out.push(string_utils::utf16_code_unit_to_char(i));
     }
     Ok(AvmString::new(activation.context.gc_context, out).into())
 }
@@ -272,7 +272,7 @@ fn index_of<'gc>(
         .encode_utf16()
         .collect::<Vec<u16>>();
     let pattern = match args.get(0) {
-        None | Some(Value::Undefined) => return Ok(Value::Undefined),
+        None => return Ok(Value::Undefined),
         Some(s) => s
             .clone()
             .coerce_to_string(activation)?
@@ -319,7 +319,7 @@ fn last_index_of<'gc>(
         .encode_utf16()
         .collect::<Vec<u16>>();
     let pattern = match args.get(0) {
-        None | Some(Value::Undefined) => return Ok(Value::Undefined),
+        None => return Ok(Value::Undefined),
         Some(s) => s
             .clone()
             .coerce_to_string(activation)?
@@ -384,7 +384,7 @@ fn slice<'gc>(
         Some(n) => string_wrapping_index(n.coerce_to_i32(activation)?, this_len),
     };
     if start_index < end_index {
-        let ret = utf16_iter_to_string(
+        let ret = string_utils::utf16_iter_to_string(
             this.encode_utf16()
                 .skip(start_index)
                 .take(end_index - start_index),
@@ -455,7 +455,7 @@ fn substr<'gc>(
         Some(n) => string_index(n.coerce_to_i32(activation)?, this_len),
     };
 
-    let ret = utf16_iter_to_string(this.encode_utf16().skip(start_index).take(len));
+    let ret = string_utils::utf16_iter_to_string(this.encode_utf16().skip(start_index).take(len));
     Ok(AvmString::new(activation.context.gc_context, ret).into())
 }
 
@@ -482,7 +482,7 @@ fn substring<'gc>(
     if end_index < start_index {
         std::mem::swap(&mut end_index, &mut start_index);
     }
-    let ret = utf16_iter_to_string(
+    let ret = string_utils::utf16_iter_to_string(
         this.encode_utf16()
             .skip(start_index)
             .take(end_index - start_index),
@@ -540,7 +540,7 @@ fn to_upper_case<'gc>(
     .into())
 }
 
-/// Normalizes an  index paramter used in `String` functions such as `substring`.
+/// Normalizes an  index parameter used in `String` functions such as `substring`.
 /// The returned index will be within the range of `[0, len]`.
 fn string_index(i: i32, len: usize) -> usize {
     if i > 0 {
@@ -555,7 +555,7 @@ fn string_index(i: i32, len: usize) -> usize {
     }
 }
 
-/// Normalizes an wrapping index paramter used in `String` functions such as `slice`.
+/// Normalizes an wrapping index parameter used in `String` functions such as `slice`.
 /// Negative values will count backwards from `len`.
 /// The returned index will be within the range of `[0, len]`.
 fn string_wrapping_index(i: i32, len: usize) -> usize {
@@ -574,23 +574,4 @@ fn string_wrapping_index(i: i32, len: usize) -> usize {
             len
         }
     }
-}
-
-/// Creates a `String` from an iterator of UTF-16 code units.
-/// TODO: Unpaired surrogates will get replaced with the Unicode replacement character.
-fn utf16_iter_to_string<I: Iterator<Item = u16>>(it: I) -> String {
-    use std::char;
-    char::decode_utf16(it)
-        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect()
-}
-
-/// Maps a UTF-16 code unit into a `char`.
-/// TODO: Surrogate characters will get replaced with the Unicode replacement character.
-fn utf16_code_unit_to_char(c: u16) -> char {
-    use std::char;
-    char::decode_utf16(std::iter::once(c))
-        .next()
-        .unwrap()
-        .unwrap_or(char::REPLACEMENT_CHARACTER)
 }

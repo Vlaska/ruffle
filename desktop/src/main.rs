@@ -4,6 +4,7 @@ mod audio;
 mod custom_event;
 mod executor;
 mod input;
+mod locale;
 mod navigator;
 mod storage;
 mod task;
@@ -21,10 +22,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::storage::DiskStorageBackend;
+use ruffle_core::backend::log::NullLogBackend;
 use ruffle_core::tag_utils::SwfMovie;
+use ruffle_render_wgpu::clap::{GraphicsBackend, PowerPreference};
 use std::rc::Rc;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Icon, WindowBuilder};
 
@@ -35,8 +38,33 @@ use winit::window::{Icon, WindowBuilder};
     version = include_str!(concat!(env!("OUT_DIR"), "/version-info.txt")),
 )]
 struct Opt {
+    /// Path to a flash movie (swf) to play
     #[clap(name = "FILE", parse(from_os_str))]
     input_path: PathBuf,
+
+    /// Type of graphics backend to use. Not all options may be supported by your current system.
+    /// Default will attempt to pick the most supported graphics backend.
+    #[clap(
+        long,
+        short,
+        case_insensitive = true,
+        default_value = "default",
+        arg_enum
+    )]
+    graphics: GraphicsBackend,
+
+    /// Power preference for the graphics device used. High power usage tends to prefer dedicated GPUs,
+    /// whereas a low power usage tends prefer integrated GPUs.
+    /// Default will pick the best device depending on the status of your computer (ie, wall-power
+    /// may choose high, battery power may choose low)
+    #[clap(
+        long,
+        short,
+        case_insensitive = true,
+        default_value = "default",
+        arg_enum
+    )]
+    power: PowerPreference,
 }
 
 fn main() {
@@ -46,7 +74,7 @@ fn main() {
 
     let opt = Opt::parse();
 
-    let ret = run_player(opt.input_path);
+    let ret = run_player(opt.input_path, opt.graphics, opt.power);
 
     if let Err(e) = ret {
         eprintln!("Fatal error:\n{}", e);
@@ -54,7 +82,11 @@ fn main() {
     }
 }
 
-fn run_player(input_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn run_player(
+    input_path: PathBuf,
+    graphics: GraphicsBackend,
+    power_preference: PowerPreference,
+) -> Result<(), Box<dyn std::error::Error>> {
     let movie = SwfMovie::from_path(&input_path)?;
     let movie_size = LogicalSize::new(movie.width(), movie.height());
 
@@ -84,6 +116,8 @@ fn run_player(input_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let renderer = Box::new(WgpuRenderBackend::for_window(
         window.as_ref(),
         (viewport_size.width, viewport_size.height),
+        graphics.into(),
+        power_preference.into(),
     )?);
     let (executor, chan) = GlutinAsyncExecutor::new(event_loop.create_proxy());
     let navigator = Box::new(navigator::ExternalNavigatorBackend::with_base_path(
@@ -97,7 +131,16 @@ fn run_player(input_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let storage = Box::new(DiskStorageBackend::new(
         input_path.file_name().unwrap_or_default().as_ref(),
     ));
-    let player = Player::new(renderer, audio, navigator, input, storage)?;
+    let locale = Box::new(locale::DesktopLocaleBackend::new());
+    let player = Player::new(
+        renderer,
+        audio,
+        navigator,
+        input,
+        storage,
+        locale,
+        Box::new(NullLogBackend::new()),
+    )?;
     player.lock().unwrap().set_root_movie(Arc::new(movie));
     player.lock().unwrap().set_is_playing(true); // Desktop player will auto-play.
 
@@ -174,6 +217,19 @@ fn run_player(input_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                 y: mouse_pos.y,
                             }
                         };
+                        player_lock.handle_event(event);
+                        if player_lock.needs_render() {
+                            window.request_redraw();
+                        }
+                    }
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        use ruffle_core::events::MouseWheelDelta;
+                        let mut player_lock = player.lock().unwrap();
+                        let delta = match delta {
+                            MouseScrollDelta::LineDelta(_, dy) => MouseWheelDelta::Lines(dy.into()),
+                            MouseScrollDelta::PixelDelta(pos) => MouseWheelDelta::Pixels(pos.y),
+                        };
+                        let event = ruffle_core::PlayerEvent::MouseWheel { delta };
                         player_lock.handle_event(event);
                         if player_lock.needs_render() {
                             window.request_redraw();

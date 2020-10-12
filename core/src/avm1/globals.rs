@@ -11,14 +11,19 @@ use std::f64;
 
 mod array;
 pub(crate) mod as_broadcaster;
+mod bevel_filter;
+mod bitmap_filter;
+mod blur_filter;
 pub(crate) mod boolean;
 pub(crate) mod button;
 mod color;
 mod color_transform;
 pub(crate) mod context_menu;
 pub(crate) mod context_menu_item;
+mod date;
 pub(crate) mod display_object;
 pub(crate) mod error;
+mod external_interface;
 mod function;
 mod key;
 mod load_vars;
@@ -41,6 +46,7 @@ pub(crate) mod system_ime;
 pub(crate) mod system_security;
 pub(crate) mod text_field;
 mod text_format;
+mod transform;
 mod xml;
 
 pub fn random<'gc>(
@@ -124,7 +130,7 @@ pub fn parse_int<'gc>(
         }
 
         // Auto-detect hexadecimal prefix and strip it.
-        // Emulate bug: the prefix is stripped irregardless of the radix.
+        // Emulate bug: the prefix is stripped regardless of the radix.
         //   parseInt('0x100', 10) == 100  // not 0
         //   parseInt('0x100', 36) == 1296 // not 1540944
         // Emulate bug: the prefix is expected before the sign or spaces.
@@ -322,13 +328,23 @@ pub struct SystemPrototypes<'gc> {
     pub point_constructor: Object<'gc>,
     pub rectangle: Object<'gc>,
     pub rectangle_constructor: Object<'gc>,
+    pub transform: Object<'gc>,
+    pub transform_constructor: Object<'gc>,
     pub shared_object: Object<'gc>,
     pub shared_object_constructor: Object<'gc>,
     pub color_transform: Object<'gc>,
+    pub color_transform_constructor: Object<'gc>,
     pub context_menu: Object<'gc>,
     pub context_menu_constructor: Object<'gc>,
     pub context_menu_item: Object<'gc>,
     pub context_menu_item_constructor: Object<'gc>,
+    pub bitmap_filter: Object<'gc>,
+    pub bitmap_filter_constructor: Object<'gc>,
+    pub blur_filter: Object<'gc>,
+    pub blur_filter_constructor: Object<'gc>,
+    pub bevel_filter: Object<'gc>,
+    pub bevel_filter_constructor: Object<'gc>,
+    pub date: Object<'gc>,
 }
 
 /// Initialize default global scope and builtins for an AVM1 instance.
@@ -379,6 +395,10 @@ pub fn create_globals<'gc>(
         rectangle::create_proto(gc_context, object_proto, function_proto);
     let color_transform_proto: Object<'gc> =
         color_transform::create_proto(gc_context, object_proto, function_proto);
+    let transform_proto: Object<'gc> =
+        transform::create_proto(gc_context, object_proto, function_proto);
+    let external_interface_proto: Object<'gc> =
+        external_interface::create_proto(gc_context, object_proto);
 
     let (broadcaster_functions, as_broadcaster) =
         as_broadcaster::create(gc_context, Some(object_proto), function_proto);
@@ -397,6 +417,7 @@ pub fn create_globals<'gc>(
         Some(function_proto),
         movie_clip_loader_proto,
     );
+    let date_proto: Object<'gc> = date::create_proto(gc_context, object_proto, function_proto);
 
     //TODO: These need to be constructors and should also set `.prototype` on each one
     let object = object::create_object_object(gc_context, object_proto, function_proto);
@@ -423,8 +444,9 @@ pub fn create_globals<'gc>(
         Some(function_proto),
         error_proto,
     );
-    let function = FunctionObject::constructor(
+    let function = FunctionObject::function_and_constructor(
         gc_context,
+        Executable::Native(function::function),
         Executable::Native(function::constructor),
         Some(function_proto),
         function_proto,
@@ -476,29 +498,101 @@ pub fn create_globals<'gc>(
     let string = string::create_string_object(gc_context, string_proto, Some(function_proto));
     let number = number::create_number_object(gc_context, number_proto, Some(function_proto));
     let boolean = boolean::create_boolean_object(gc_context, boolean_proto, Some(function_proto));
+    let date = date::create_date_object(gc_context, date_proto, Some(function_proto));
 
     let flash = ScriptObject::object(gc_context, Some(object_proto));
-    let geom = ScriptObject::object(gc_context, Some(object_proto));
-    let matrix = matrix::create_matrix_object(gc_context, matrix_proto, Some(function_proto));
 
+    let geom = ScriptObject::object(gc_context, Some(object_proto));
+    let filters = ScriptObject::object(gc_context, Some(object_proto));
+
+    let matrix = matrix::create_matrix_object(gc_context, matrix_proto, Some(function_proto));
     let point = point::create_point_object(gc_context, point_proto, Some(function_proto));
     let rectangle =
         rectangle::create_rectangle_object(gc_context, rectangle_proto, Some(function_proto));
+    let color_transform = FunctionObject::function(
+        gc_context,
+        Executable::Native(color_transform::constructor),
+        Some(function_proto),
+        color_transform_proto,
+    );
+    let transform = FunctionObject::function(
+        gc_context,
+        Executable::Native(transform::constructor),
+        Some(function_proto),
+        transform_proto,
+    );
 
     flash.define_value(gc_context, "geom", geom.into(), EnumSet::empty());
+    flash.define_value(gc_context, "filters", filters.into(), EnumSet::empty());
     geom.define_value(gc_context, "Matrix", matrix.into(), EnumSet::empty());
     geom.define_value(gc_context, "Point", point.into(), EnumSet::empty());
     geom.define_value(gc_context, "Rectangle", rectangle.into(), EnumSet::empty());
     geom.define_value(
         gc_context,
         "ColorTransform",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(color_transform::constructor),
-            Some(function_proto),
-            color_transform_proto,
-        )
-        .into(),
+        color_transform.into(),
+        EnumSet::empty(),
+    );
+    geom.define_value(gc_context, "Transform", transform.into(), EnumSet::empty());
+
+    let bitmap_filter_proto =
+        bitmap_filter::create_proto(gc_context, object_proto, Some(function_proto));
+    let bitmap_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(bitmap_filter::constructor),
+        Some(function_proto),
+        bitmap_filter_proto,
+    );
+
+    let blur_filter_proto =
+        blur_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let blur_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(blur_filter::constructor),
+        Some(function_proto),
+        blur_filter_proto,
+    );
+
+    let bevel_filter_proto =
+        bevel_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let bevel_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(bevel_filter::constructor),
+        Some(function_proto),
+        bevel_filter_proto,
+    );
+
+    filters.define_value(
+        gc_context,
+        "BitmapFilter",
+        bitmap_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "BlurFilter",
+        blur_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "BevelFilter",
+        bevel_filter.into(),
+        EnumSet::empty(),
+    );
+
+    let external = ScriptObject::object(gc_context, Some(object_proto));
+    let external_interface = external_interface::create_external_interface_object(
+        gc_context,
+        external_interface_proto,
+        function_proto,
+    );
+
+    flash.define_value(gc_context, "external", external.into(), EnumSet::empty());
+    external.define_value(
+        gc_context,
+        "ExternalInterface",
+        external_interface.into(),
         EnumSet::empty(),
     );
 
@@ -537,6 +631,7 @@ pub fn create_globals<'gc>(
     globals.define_value(gc_context, "String", string.into(), DontEnum.into());
     globals.define_value(gc_context, "Number", number.into(), DontEnum.into());
     globals.define_value(gc_context, "Boolean", boolean.into(), DontEnum.into());
+    globals.define_value(gc_context, "Date", date.into(), DontEnum.into());
 
     let shared_object_proto = shared_object::create_proto(gc_context, object_proto, function_proto);
 
@@ -744,13 +839,23 @@ pub fn create_globals<'gc>(
             point_constructor: point,
             rectangle: rectangle_proto,
             rectangle_constructor: rectangle,
+            transform: transform_proto,
+            transform_constructor: transform,
             shared_object: shared_object_proto,
             shared_object_constructor: shared_obj,
             color_transform: color_transform_proto,
+            color_transform_constructor: color_transform,
             context_menu: context_menu_proto,
             context_menu_constructor: context_menu,
             context_menu_item: context_menu_item_proto,
             context_menu_item_constructor: context_menu_item,
+            bitmap_filter: bitmap_filter_proto,
+            bitmap_filter_constructor: bitmap_filter,
+            blur_filter: blur_filter_proto,
+            blur_filter_constructor: blur_filter,
+            bevel_filter: bevel_filter_proto,
+            bevel_filter_constructor: bevel_filter,
+            date: date_proto,
         },
         globals.into(),
         broadcaster_functions,

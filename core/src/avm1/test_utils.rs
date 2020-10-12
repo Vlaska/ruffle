@@ -5,6 +5,8 @@ use crate::avm1::{Avm1, Object, Timers, UpdateContext};
 use crate::avm2::Avm2;
 use crate::backend::audio::NullAudioBackend;
 use crate::backend::input::NullInputBackend;
+use crate::backend::locale::NullLocaleBackend;
+use crate::backend::log::NullLogBackend;
 use crate::backend::navigator::NullNavigatorBackend;
 use crate::backend::render::NullRenderer;
 use crate::backend::storage::MemoryStorageBackend;
@@ -14,10 +16,13 @@ use crate::library::Library;
 use crate::loader::LoadManager;
 use crate::prelude::*;
 use crate::tag_utils::{SwfMovie, SwfSlice};
+use crate::vminterface::Instantiator;
 use gc_arena::{rootless_arena, MutationContext};
+use instant::Instant;
 use rand::{rngs::SmallRng, SeedableRng};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub fn with_avm<F>(swf_version: u8, test: F)
 where
@@ -30,7 +35,7 @@ where
         let mut avm1 = Avm1::new(gc_context, swf_version);
         let mut avm2 = Avm2::new(gc_context);
         let swf = Arc::new(SwfMovie::empty(swf_version));
-        let mut root: DisplayObject<'gc> =
+        let root: DisplayObject<'gc> =
             MovieClip::new(SwfSlice::empty(swf.clone()), gc_context).into();
         root.set_depth(gc_context, 0);
         let mut levels = BTreeMap::new();
@@ -56,6 +61,8 @@ where
             library: &mut Library::default(),
             navigator: &mut NullNavigatorBackend::new(),
             renderer: &mut NullRenderer::new(),
+            locale: &mut NullLocaleBackend::new(),
+            log: &mut NullLogBackend::new(),
             system_prototypes: avm1.prototypes().clone(),
             mouse_hovered_object: None,
             mouse_position: &(Twips::new(0), Twips::new(0)),
@@ -72,8 +79,11 @@ where
             needs_render: &mut false,
             avm1: &mut avm1,
             avm2: &mut avm2,
+            external_interface: &mut Default::default(),
+            update_start: Instant::now(),
+            max_execution_duration: Duration::from_secs(15),
         };
-        root.post_instantiation(&mut context, root, None, false);
+        root.post_instantiation(&mut context, root, None, Instantiator::Movie, false);
         root.set_name(context.gc_context, "");
 
         fn run_test<'a, 'gc: 'a, F>(

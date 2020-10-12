@@ -1,12 +1,10 @@
 //! ActionScript Virtual Machine 2 (AS3) support
 
-use crate::avm2::activation::Activation;
 use crate::avm2::globals::SystemPrototypes;
-use crate::avm2::object::{Object, ScriptObject, TObject};
+use crate::avm2::object::ScriptObject;
 use crate::avm2::scope::Scope;
 use crate::avm2::script::Script;
 use crate::avm2::script::TranslationUnit;
-use crate::avm2::value::Value;
 use crate::context::UpdateContext;
 use crate::tag_utils::SwfSlice;
 use gc_arena::{Collect, GcCell, MutationContext};
@@ -23,6 +21,7 @@ macro_rules! avm_debug {
 }
 
 mod activation;
+mod array;
 mod class;
 mod function;
 mod globals;
@@ -39,11 +38,16 @@ mod string;
 mod traits;
 mod value;
 
+pub use crate::avm2::activation::Activation;
+pub use crate::avm2::names::{Namespace, QName};
+pub use crate::avm2::object::{Object, StageObject, TObject};
+pub use crate::avm2::value::Value;
+
 /// Boxed error alias.
 ///
 /// As AVM2 is a far stricter VM than AVM1, this may eventually be replaced
 /// with a proper Avm2Error enum.
-type Error = Box<dyn std::error::Error>;
+pub type Error = Box<dyn std::error::Error>;
 
 /// The state of an AVM2 interpreter.
 #[derive(Collect)]
@@ -98,6 +102,23 @@ impl<'gc> Avm2<'gc> {
         let mut init_activation = Activation::from_script(context.reborrow(), script, globals)?;
 
         init_activation.run_stack_frame_for_script(script)
+    }
+
+    pub fn run_stack_frame_for_callable(
+        callable: Object<'gc>,
+        reciever: Option<Object<'gc>>,
+        args: &[Value<'gc>],
+        context: &mut UpdateContext<'_, 'gc, '_>,
+    ) -> Result<(), Error> {
+        let mut evt_activation = Activation::from_nothing(context.reborrow());
+        callable.call(
+            reciever,
+            args,
+            &mut evt_activation,
+            reciever.and_then(|r| r.proto()),
+        )?;
+
+        Ok(())
     }
 
     /// Load an ABC file embedded in a `SwfSlice`.

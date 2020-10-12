@@ -4,15 +4,16 @@ use crate::backend::render::BitmapHandle;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::prelude::*;
+use crate::types::{Degrees, Percent};
 use gc_arena::{Collect, Gc, GcCell};
 
 /// A Bitmap display object is a raw bitamp on the stage.
 /// This can only be instanitated on the display list in SWFv9 AVM2 files.
 /// In AVM1, this is only a library symbol that is referenced by `Graphic`.
 /// Normally bitmaps are drawn in Flash as part of a Shape tag (`Graphic`),
-/// but starting in AVM2, a raw `Bitmap` display object can be crated
+/// but starting in AVM2, a raw `Bitmap` display object can be created
 /// with the `PlaceObject3` tag.
-/// It can also be crated in ActionScript using the `Bitmap` class.
+/// It can also be created in ActionScript using the `Bitmap` class.
 #[derive(Clone, Debug, Collect, Copy)]
 #[collect(no_drop)]
 pub struct Bitmap<'gc>(GcCell<'gc, BitmapData<'gc>>);
@@ -79,7 +80,7 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
         }
     }
 
-    fn run_frame(&mut self, _context: &mut UpdateContext) {
+    fn run_frame(&self, _context: &mut UpdateContext) {
         // Noop
     }
 

@@ -6,6 +6,10 @@ ruffle_shadow_tmpl.innerHTML = `
             /* Default width/height; this will get overridden by user styles/attributes */
             width: 550px;
             height: 400px;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
 
         #container {
@@ -41,6 +45,63 @@ ruffle_shadow_tmpl.innerHTML = `
 
         #play_button:hover .icon {
             filter: brightness(1.3);
+        }
+
+        #panic {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            /* Inverted colours from play button! */
+            background: linear-gradient(180deg, rgba(253,58,64,1) 0%, rgba(253,161,56,1) 100%);
+            color: black;
+        }
+    
+        #panic a {
+            color: #37528C;
+        }
+    
+        #panic-title {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 42px;
+            font-weight: bold;
+        }
+    
+        #panic-body {
+            text-align: center;
+            font-size: 20px;
+            position: absolute;
+            top: 100px;
+            bottom: 80px;
+            left: 50px;
+            right: 50px;
+        }
+
+        #panic-body textarea {
+            width: 100%;
+            height: 100%;
+        }
+    
+        #panic-footer {
+            position: absolute;
+            bottom: 30px;
+            text-align: center;
+            font-size: 20px;
+            width: 100%;
+        }
+    
+        #panic ul {
+            margin: 35px 0 0 0;
+            padding: 0;
+            max-width: 100%;
+            display: flex;
+            list-style-type: none;
+            justify-content: center;
+            align-items: center;
+        }
+    
+        #panic li {
+            padding: 10px 50px;
         }
     </style>
     <style id="dynamic_styles"></style>

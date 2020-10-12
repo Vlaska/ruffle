@@ -1,7 +1,10 @@
 use lyon::lyon_algorithms::path::Path;
 use ruffle_core::shape_utils::DrawCommand;
 use ruffle_core::swf;
+use std::borrow::Cow;
+use std::mem::size_of;
 use swf::{GradientSpread, Twips};
+use wgpu::util::DeviceExt;
 macro_rules! create_debug_label {
     ($($arg:tt)*) => (
         if cfg!(feature = "render_debug_labels") {
@@ -12,19 +15,56 @@ macro_rules! create_debug_label {
     )
 }
 
+pub fn format_list<'a>(values: &[&'a str], connector: &'a str) -> Cow<'a, str> {
+    match values.len() {
+        0 => Cow::Borrowed(""),
+        1 => Cow::Borrowed(values[0]),
+        _ => Cow::Owned(
+            values[0..values.len() - 1].join(", ")
+                + " "
+                + connector
+                + " "
+                + values[values.len() - 1],
+        ),
+    }
+}
+
+pub fn get_backend_names(backends: wgpu::BackendBit) -> Vec<&'static str> {
+    let mut names = Vec::new();
+
+    if backends.contains(wgpu::BackendBit::VULKAN) {
+        names.push("Vulkan");
+    }
+    if backends.contains(wgpu::BackendBit::DX12) {
+        names.push("DirectX 12");
+    }
+    if backends.contains(wgpu::BackendBit::DX11) {
+        names.push("DirectX 11");
+    }
+    if backends.contains(wgpu::BackendBit::METAL) {
+        names.push("Metal");
+    }
+    if backends.contains(wgpu::BackendBit::GL) {
+        names.push("Open GL");
+    }
+    if backends.contains(wgpu::BackendBit::BROWSER_WEBGPU) {
+        names.push("Web GPU");
+    }
+
+    names
+}
+
 pub fn create_buffer_with_data(
     device: &wgpu::Device,
     data: &[u8],
     usage: wgpu::BufferUsage,
     label: Option<String>,
 ) -> wgpu::Buffer {
-    let mapped = device.create_buffer_mapped(&wgpu::BufferDescriptor {
-        size: data.len() as u64,
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         usage,
         label: label.as_deref(),
-    });
-    mapped.data.copy_from_slice(data);
-    mapped.finish()
+        contents: data,
+    })
 }
 
 pub fn point(x: Twips, y: Twips) -> lyon::math::Point {
@@ -144,5 +184,30 @@ pub fn gradient_spread_mode_index(spread: GradientSpread) -> i32 {
         GradientSpread::Pad => 0,
         GradientSpread::Repeat => 1,
         GradientSpread::Reflect => 2,
+    }
+}
+
+// Based off wgpu example 'capture'
+#[derive(Debug)]
+pub struct BufferDimensions {
+    pub width: usize,
+    pub height: usize,
+    pub unpadded_bytes_per_row: usize,
+    pub padded_bytes_per_row: usize,
+}
+
+impl BufferDimensions {
+    pub fn new(width: usize, height: usize) -> Self {
+        let bytes_per_pixel = size_of::<u32>();
+        let unpadded_bytes_per_row = width * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let padded_bytes_per_row_padding = (align - unpadded_bytes_per_row % align) % align;
+        let padded_bytes_per_row = unpadded_bytes_per_row + padded_bytes_per_row_padding;
+        Self {
+            width,
+            height,
+            unpadded_bytes_per_row,
+            padded_bytes_per_row,
+        }
     }
 }

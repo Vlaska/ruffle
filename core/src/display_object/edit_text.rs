@@ -11,6 +11,8 @@ use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
 use crate::tag_utils::SwfMovie;
 use crate::transform::Transform;
+use crate::types::{Degrees, Percent};
+use crate::vminterface::Instantiator;
 use crate::xml::XMLDocument;
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use std::{cell::Ref, sync::Arc};
@@ -249,7 +251,7 @@ impl<'gc> EditText<'gc> {
             is_device_font: false,
         };
 
-        let mut text_field = Self::from_swf_tag(context, swf_movie, swf_tag);
+        let text_field = Self::from_swf_tag(context, swf_movie, swf_tag);
 
         // Set position.
         let mut matrix = text_field.matrix_mut(context.gc_context);
@@ -679,7 +681,7 @@ impl<'gc> EditText<'gc> {
                     context.transform_stack.push(transform);
                     context
                         .renderer
-                        .render_shape(glyph.shape, context.transform_stack.transform());
+                        .render_shape(glyph.shape_handle, context.transform_stack.transform());
                     context.transform_stack.pop();
                 },
             );
@@ -834,7 +836,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         Some(self.0.read().static_data.swf.clone())
     }
 
-    fn run_frame(&mut self, _context: &mut UpdateContext) {
+    fn run_frame(&self, _context: &mut UpdateContext) {
         // Noop
     }
 
@@ -843,11 +845,12 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     }
 
     fn post_instantiation(
-        &mut self,
+        &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
         display_object: DisplayObject<'gc>,
         _init_object: Option<Object<'gc>>,
-        _instantiated_from_avm: bool,
+        _instantiated_by: Instantiator,
+        run_frame: bool,
     ) {
         self.set_default_instance_name(context);
 
@@ -894,6 +897,10 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
                 self.bind_text_field_variables(activation);
             },
         );
+
+        if run_frame {
+            self.run_frame(context);
+        }
     }
 
     fn object(&self) -> Value<'gc> {
@@ -915,7 +922,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         (edit_text.base.transform.matrix.tx + offset).to_pixels()
     }
 
-    fn set_x(&mut self, gc_context: MutationContext<'gc, '_>, value: f64) {
+    fn set_x(&self, gc_context: MutationContext<'gc, '_>, value: f64) {
         let mut edit_text = self.0.write(gc_context);
         let offset = edit_text.bounds.x_min;
         edit_text.base.transform.matrix.tx = Twips::from_pixels(value) - offset;
@@ -930,7 +937,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         (edit_text.base.transform.matrix.ty + offset).to_pixels()
     }
 
-    fn set_y(&mut self, gc_context: MutationContext<'gc, '_>, value: f64) {
+    fn set_y(&self, gc_context: MutationContext<'gc, '_>, value: f64) {
         let mut edit_text = self.0.write(gc_context);
         let offset = edit_text.bounds.y_min;
         edit_text.base.transform.matrix.ty = Twips::from_pixels(value) - offset;
@@ -943,7 +950,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         self.0.read().bounds.width().to_pixels()
     }
 
-    fn set_width(&mut self, gc_context: MutationContext<'gc, '_>, value: f64) {
+    fn set_width(&self, gc_context: MutationContext<'gc, '_>, value: f64) {
         let mut write = self.0.write(gc_context);
 
         write.bounds.set_width(Twips::from_pixels(value));
@@ -957,7 +964,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         self.0.read().bounds.height().to_pixels()
     }
 
-    fn set_height(&mut self, gc_context: MutationContext<'gc, '_>, value: f64) {
+    fn set_height(&self, gc_context: MutationContext<'gc, '_>, value: f64) {
         let mut write = self.0.write(gc_context);
 
         write.bounds.set_height(Twips::from_pixels(value));
@@ -967,7 +974,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         self.redraw_border(gc_context);
     }
 
-    fn set_matrix(&mut self, context: MutationContext<'gc, '_>, matrix: &Matrix) {
+    fn set_matrix(&self, context: MutationContext<'gc, '_>, matrix: &Matrix) {
         self.0.write(context).base.set_matrix(context, matrix);
         self.redraw_border(context);
     }
@@ -981,16 +988,31 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         let transform = self.transform().clone();
         context.transform_stack.push(&transform);
 
+        let edit_text = self.0.read();
         context.transform_stack.push(&Transform {
             matrix: Matrix {
-                tx: self.0.read().bounds.x_min,
-                ty: self.0.read().bounds.y_min,
+                tx: edit_text.bounds.x_min,
+                ty: edit_text.bounds.y_min,
                 ..Default::default()
             },
             ..Default::default()
         });
 
-        self.0.read().drawing.render(context);
+        edit_text.drawing.render(context);
+
+        context.renderer.push_mask();
+        let mask = Matrix::create_box(
+            edit_text.bounds.width().to_pixels() as f32,
+            edit_text.bounds.height().to_pixels() as f32,
+            0.0,
+            Twips::zero(),
+            Twips::zero(),
+        );
+        context.renderer.draw_rect(
+            Color::from_rgb(0, 0xff),
+            &(context.transform_stack.transform().matrix * mask),
+        );
+        context.renderer.activate_mask();
 
         // TODO: Where does this come from? How is this different than INTERNAL_PADDING? Does this apply to y as well?
         // If this is actually right, offset the border in `redraw_border` instead of doing an extra push.
@@ -1003,9 +1025,11 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             ..Default::default()
         });
 
-        for layout_box in self.0.read().layout.iter() {
+        for layout_box in edit_text.layout.iter() {
             self.render_layout_box(context, layout_box);
         }
+
+        context.renderer.pop_mask();
 
         context.transform_stack.pop();
         context.transform_stack.pop();
@@ -1016,7 +1040,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         false
     }
 
-    fn unload(&mut self, context: &mut UpdateContext<'_, 'gc, '_>) {
+    fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
         // Unbind any display objects bound to this text.
         if let Some(stage_object) = self.0.write(context.gc_context).bound_stage_object.take() {
             stage_object.clear_text_field_binding(context.gc_context, *self);

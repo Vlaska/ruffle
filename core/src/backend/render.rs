@@ -3,6 +3,7 @@ pub use crate::{transform::Transform, Color};
 use downcast_rs::Downcast;
 use std::io::Read;
 pub use swf;
+use swf::Matrix;
 
 pub trait RenderBackend: Downcast {
     fn set_viewport_dimensions(&mut self, width: u32, height: u32);
@@ -34,6 +35,7 @@ pub trait RenderBackend: Downcast {
     fn begin_frame(&mut self, clear: Color);
     fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform);
     fn render_shape(&mut self, shape: ShapeHandle, transform: &Transform);
+    fn draw_rect(&mut self, color: Color, matrix: &Matrix);
     fn end_frame(&mut self);
     fn draw_letterbox(&mut self, letterbox: Letterbox);
     fn push_mask(&mut self);
@@ -137,6 +139,7 @@ impl RenderBackend for NullRenderer {
     fn end_frame(&mut self) {}
     fn render_bitmap(&mut self, _bitmap: BitmapHandle, _transform: &Transform) {}
     fn render_shape(&mut self, _shape: ShapeHandle, _transform: &Transform) {}
+    fn draw_rect(&mut self, _color: Color, _matrix: &Matrix) {}
     fn draw_letterbox(&mut self, _letterbox: Letterbox) {}
     fn push_mask(&mut self) {}
     fn activate_mask(&mut self) {}
@@ -469,11 +472,9 @@ pub fn decode_png(data: &[u8]) -> Result<Bitmap, Error> {
 /// DefineBitsLossless is Zlib encoded pixel data (similar to PNG), possibly
 /// palletized.
 pub fn decode_gif(data: &[u8]) -> Result<Bitmap, Error> {
-    use gif::SetParameter;
-
-    let mut decoder = gif::Decoder::new(data);
-    decoder.set(gif::ColorOutput::RGBA);
-    let mut reader = decoder.read_info()?;
+    let mut decode_options = gif::DecodeOptions::new();
+    decode_options.set_color_output(gif::ColorOutput::RGBA);
+    let mut reader = decode_options.read_info(data)?;
     let frame = reader.read_next_frame()?.ok_or("No frames in GIF")?;
 
     Ok(Bitmap {

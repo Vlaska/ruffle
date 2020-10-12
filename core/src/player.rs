@@ -5,25 +5,33 @@ use crate::avm1::object::Object;
 use crate::avm1::{Avm1, AvmString, TObject, Timers, Value};
 use crate::avm2::Avm2;
 use crate::backend::input::{InputBackend, MouseCursor};
+use crate::backend::locale::LocaleBackend;
 use crate::backend::navigator::{NavigatorBackend, RequestOptions};
 use crate::backend::storage::StorageBackend;
-use crate::backend::{audio::AudioBackend, render::Letterbox, render::RenderBackend};
+use crate::backend::{
+    audio::AudioBackend, log::LogBackend, render::Letterbox, render::RenderBackend,
+};
 use crate::context::{ActionQueue, ActionType, RenderContext, UpdateContext};
 use crate::display_object::{EditText, MorphShape, MovieClip};
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode, PlayerEvent};
+use crate::external::Value as ExternalValue;
+use crate::external::{ExternalInterface, ExternalInterfaceProvider};
 use crate::library::Library;
 use crate::loader::LoadManager;
 use crate::prelude::*;
 use crate::tag_utils::SwfMovie;
 use crate::transform::TransformStack;
+use crate::vminterface::Instantiator;
 use enumset::EnumSet;
 use gc_arena::{make_arena, ArenaParameters, Collect, GcCell};
+use instant::Instant;
 use log::info;
 use rand::{rngs::SmallRng, SeedableRng};
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 pub static DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto-sans-definefont3.bin");
 
@@ -71,6 +79,9 @@ struct GcRootData<'gc> {
 
     /// Timed callbacks created with `setInterval`/`setTimeout`.
     timers: Timers<'gc>,
+
+    /// External interface for (for example) Javascript <-> Actionscript interaction
+    external_interface: ExternalInterface<'gc>,
 }
 
 impl<'gc> GcRootData<'gc> {
@@ -90,6 +101,7 @@ impl<'gc> GcRootData<'gc> {
         &mut HashMap<String, Object<'gc>>,
         &mut Vec<EditText<'gc>>,
         &mut Timers<'gc>,
+        &mut ExternalInterface<'gc>,
     ) {
         (
             &mut self.levels,
@@ -102,6 +114,7 @@ impl<'gc> GcRootData<'gc> {
             &mut self.shared_objects,
             &mut self.unbound_text_fields,
             &mut self.timers,
+            &mut self.external_interface,
         )
     }
 }
@@ -114,6 +127,8 @@ type Navigator = Box<dyn NavigatorBackend>;
 type Renderer = Box<dyn RenderBackend>;
 type Input = Box<dyn InputBackend>;
 type Storage = Box<dyn StorageBackend>;
+type Locale = Box<dyn LocaleBackend>;
+type Log = Box<dyn LogBackend>;
 
 pub struct Player {
     /// The version of the player we're emulating.
@@ -137,6 +152,8 @@ pub struct Player {
     renderer: Renderer,
     pub navigator: Navigator,
     input: Input,
+    locale: Locale,
+    log: Log,
     transform_stack: TransformStack,
     view_matrix: Matrix,
     inverse_view_matrix: Matrix,
@@ -171,6 +188,10 @@ pub struct Player {
     /// Time remaining until the next timer will fire.
     time_til_next_timer: Option<f64>,
 
+    /// The maximum amount of time that can be called before a `Error::ExecutionTimeout`
+    /// is raised. This defaults to 15 seconds but can be changed.
+    max_execution_duration: Duration,
+
     /// Self-reference to ourselves.
     ///
     /// This is a weak reference that is upgraded and handed out in various
@@ -186,6 +207,8 @@ impl Player {
         navigator: Navigator,
         input: Input,
         storage: Storage,
+        locale: Locale,
+        log: Log,
     ) -> Result<Arc<Mutex<Self>>, Error> {
         let fake_movie = Arc::new(SwfMovie::empty(NEWEST_PLAYER_VERSION));
         let movie_width = 550;
@@ -213,15 +236,11 @@ impl Player {
             rng: SmallRng::from_seed([0u8; 16]), // TODO(Herschel): Get a proper seed on all platforms.
 
             gc_arena: GcArena::new(ArenaParameters::default(), |gc_context| {
-                let fake_root = MovieClip::from_movie(gc_context, fake_movie);
-                let mut levels = BTreeMap::new();
-                levels.insert(0 as u32, fake_root.into());
-
                 GcRoot(GcCell::allocate(
                     gc_context,
                     GcRootData {
                         library: Library::default(),
-                        levels,
+                        levels: BTreeMap::new(),
                         mouse_hovered_object: None,
                         drag_object: None,
                         avm1: Avm1::new(gc_context, NEWEST_PLAYER_VERSION),
@@ -231,6 +250,7 @@ impl Player {
                         shared_objects: HashMap::new(),
                         unbound_text_fields: Vec::new(),
                         timers: Timers::new(),
+                        external_interface: ExternalInterface::new(),
                     },
                 ))
             }),
@@ -252,14 +272,31 @@ impl Player {
             audio,
             navigator,
             input,
+            locale,
+            log,
             self_reference: None,
             system: SystemProperties::default(),
             instance_counter: 0,
             time_til_next_timer: None,
             storage,
+            max_execution_duration: Duration::from_secs(15),
         };
 
-        player.mutate_with_update_context(|context| Avm2::load_player_globals(context))?;
+        player.mutate_with_update_context(|context| {
+            // Instantiate an empty root before the main movie loads.
+            let fake_root = MovieClip::from_movie(context.gc_context, fake_movie);
+            fake_root.post_instantiation(
+                context,
+                fake_root.into(),
+                None,
+                Instantiator::Movie,
+                false,
+            );
+            context.levels.insert(0 as u32, fake_root.into());
+
+            Avm2::load_player_globals(context)
+        })?;
+
         player.build_matrices();
         player.audio.set_frame_rate(frame_rate);
 
@@ -305,12 +342,16 @@ impl Player {
         self.movie_height = movie.height();
         self.frame_rate = movie.header().frame_rate.into();
         self.swf = movie;
+        self.instance_counter = 0;
 
         self.mutate_with_update_context(|context| {
-            let mut root: DisplayObject =
+            context.library.library_for_movie_mut(context.swf.clone());
+
+            let root: DisplayObject =
                 MovieClip::from_movie(context.gc_context, context.swf.clone()).into();
+
             root.set_depth(context.gc_context, 0);
-            root.post_instantiation(context, root, None, false);
+            root.post_instantiation(context, root, None, Instantiator::Movie, false);
             root.set_name(context.gc_context, "");
             context.levels.insert(0, root);
 
@@ -411,7 +452,9 @@ impl Player {
     pub fn set_is_playing(&mut self, v: bool) {
         if v {
             // Allow auto-play after user gesture for web backends.
-            self.audio.prime_audio();
+            self.audio.play();
+        } else {
+            self.audio.pause();
         }
         self.is_playing = v;
     }
@@ -550,44 +593,56 @@ impl Player {
                 }
             });
         }
-
         // Propagte clip events.
-        let (clip_event, listener) = match event {
-            PlayerEvent::KeyDown { .. } => (Some(ClipEvent::KeyDown), Some(("Key", "onKeyDown"))),
-            PlayerEvent::KeyUp { .. } => (Some(ClipEvent::KeyUp), Some(("Key", "onKeyUp"))),
-            PlayerEvent::MouseMove { .. } => {
-                (Some(ClipEvent::MouseMove), Some(("Mouse", "onMouseMove")))
-            }
-            PlayerEvent::MouseUp { .. } => (Some(ClipEvent::MouseUp), Some(("Mouse", "onMouseUp"))),
-            PlayerEvent::MouseDown { .. } => {
-                (Some(ClipEvent::MouseDown), Some(("Mouse", "onMouseDown")))
-            }
-            _ => (None, None),
-        };
 
-        if clip_event.is_some() || listener.is_some() {
-            self.mutate_with_update_context(|context| {
+        self.mutate_with_update_context(|context| {
+            let (clip_event, listener) = match event {
+                PlayerEvent::KeyDown { .. } => {
+                    (Some(ClipEvent::KeyDown), Some(("Key", "onKeyDown", vec![])))
+                }
+                PlayerEvent::KeyUp { .. } => {
+                    (Some(ClipEvent::KeyUp), Some(("Key", "onKeyUp", vec![])))
+                }
+                PlayerEvent::MouseMove { .. } => (
+                    Some(ClipEvent::MouseMove),
+                    Some(("Mouse", "onMouseMove", vec![])),
+                ),
+                PlayerEvent::MouseUp { .. } => (
+                    Some(ClipEvent::MouseUp),
+                    Some(("Mouse", "onMouseUp", vec![])),
+                ),
+                PlayerEvent::MouseDown { .. } => (
+                    Some(ClipEvent::MouseDown),
+                    Some(("Mouse", "onMouseDown", vec![])),
+                ),
+                PlayerEvent::MouseWheel { delta } => {
+                    let delta = Value::from(delta.lines());
+                    (None, Some(("Mouse", "onMouseWheel", vec![delta])))
+                }
+                _ => (None, None),
+            };
+
+            // Fire clip event on all clips.
+            if let Some(clip_event) = clip_event {
                 let levels: Vec<DisplayObject<'_>> = context.levels.values().copied().collect();
-
                 for level in levels {
-                    if let Some(clip_event) = clip_event {
-                        level.handle_clip_event(context, clip_event);
-                    }
+                    level.handle_clip_event(context, clip_event);
                 }
+            }
 
-                if let Some((listener_type, event_name)) = listener {
-                    context.action_queue.queue_actions(
-                        *context.levels.get(&0).expect("root level"),
-                        ActionType::NotifyListeners {
-                            listener: listener_type,
-                            method: event_name,
-                            args: vec![],
-                        },
-                        false,
-                    );
-                }
-            });
-        }
+            // Fire event listener on appropriate object
+            if let Some((listener_type, event_name, args)) = listener {
+                context.action_queue.queue_actions(
+                    *context.levels.get(&0).expect("root level"),
+                    ActionType::NotifyListeners {
+                        listener: listener_type,
+                        method: event_name,
+                        args,
+                    },
+                    false,
+                );
+            }
+        });
 
         let mut is_mouse_down = self.is_mouse_down;
         self.mutate_with_update_context(|context| {
@@ -684,7 +739,7 @@ impl Player {
                     }
                 }
 
-                // RollOver on new node.I stil
+                // RollOver on new node.I still
                 new_cursor = MouseCursor::Arrow;
                 if let Some(node) = new_hovered {
                     new_cursor = MouseCursor::Hand;
@@ -740,7 +795,7 @@ impl Player {
             // want to run frames on
             let levels: Vec<_> = update_context.levels.values().copied().collect();
 
-            for mut level in levels {
+            for level in levels {
                 level.run_frame(update_context);
             }
         });
@@ -812,6 +867,10 @@ impl Player {
 
     pub fn input_mut(&mut self) -> &mut dyn InputBackend {
         self.input.deref_mut()
+    }
+
+    pub fn locale(&self) -> &Locale {
+        &self.locale
     }
 
     fn run_actions<'gc>(context: &mut UpdateContext<'_, 'gc, '_>) {
@@ -912,14 +971,15 @@ impl Player {
                     );
                 }
 
-                // DoABC code
-                ActionType::DoABC {
-                    name,
-                    is_lazy_initialize,
-                    abc,
+                ActionType::Callable2 {
+                    callable,
+                    reciever,
+                    args,
                 } => {
-                    if let Err(e) = Avm2::load_abc(abc, &name, is_lazy_initialize, context) {
-                        log::warn!("Error loading ABC file: {}", e);
+                    if let Err(e) =
+                        Avm2::run_stack_frame_for_callable(callable, reciever, &args[..], context)
+                    {
+                        log::error!("Unhandled AVM2 exception in event handler: {}", e);
                     }
                 }
             }
@@ -987,7 +1047,10 @@ impl Player {
             system_properties,
             instance_counter,
             storage,
+            locale,
+            logging,
             needs_render,
+            max_execution_duration,
         ) = (
             self.player_version,
             &self.swf,
@@ -1004,7 +1067,10 @@ impl Player {
             &mut self.system,
             &mut self.instance_counter,
             self.storage.deref_mut(),
+            self.locale.deref_mut(),
+            self.log.deref_mut(),
             &mut self.needs_render,
+            self.max_execution_duration,
         );
 
         self.gc_arena.mutate(|gc_context, gc_root| {
@@ -1021,6 +1087,7 @@ impl Player {
                 shared_objects,
                 unbound_text_fields,
                 timers,
+                external_interface,
             ) = root_data.update_context_params();
 
             let mut update_context = UpdateContext {
@@ -1046,12 +1113,17 @@ impl Player {
                 system: system_properties,
                 instance_counter,
                 storage,
+                locale,
+                log: logging,
                 shared_objects,
                 unbound_text_fields,
                 timers,
                 needs_render,
                 avm1,
                 avm2,
+                external_interface,
+                update_start: Instant::now(),
+                max_execution_duration,
             };
 
             let ret = f(&mut update_context);
@@ -1122,6 +1194,44 @@ impl Player {
     pub fn update_timers(&mut self, dt: f64) {
         self.time_til_next_timer =
             self.mutate_with_update_context(|context| Timers::update_timers(context, dt));
+    }
+
+    /// Returns whether this player consumes mouse wheel events.
+    /// Used by web to prevent scrolling.
+    pub fn should_prevent_scrolling(&mut self) -> bool {
+        self.mutate_with_update_context(|context| context.avm1.has_mouse_listener())
+    }
+
+    pub fn add_external_interface(&mut self, provider: Box<dyn ExternalInterfaceProvider>) {
+        self.mutate_with_update_context(|context| {
+            context.external_interface.add_provider(provider)
+        });
+    }
+
+    pub fn call_internal_interface(
+        &mut self,
+        name: &str,
+        args: impl IntoIterator<Item = ExternalValue>,
+    ) -> ExternalValue {
+        self.mutate_with_update_context(|context| {
+            if let Some(callback) = context.external_interface.get_callback(name) {
+                callback.call(context, name, args)
+            } else {
+                ExternalValue::Null
+            }
+        })
+    }
+
+    pub fn log_backend(&self) -> &Log {
+        &self.log
+    }
+
+    pub fn max_execution_duration(&self) -> Duration {
+        self.max_execution_duration
+    }
+
+    pub fn set_max_execution_duration(&mut self, max_execution_duration: Duration) {
+        self.max_execution_duration = max_execution_duration
     }
 }
 

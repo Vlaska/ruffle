@@ -14,6 +14,7 @@ use crate::tag_utils::SwfSlice;
 mod test_utils;
 
 pub mod activation;
+mod callable_value;
 pub mod debug;
 pub mod error;
 mod fscommand;
@@ -101,13 +102,17 @@ pub struct Avm1<'gc> {
     /// `ActionDefineFunction2` defined functions do not use these slots.
     registers: [Value<'gc>; 4],
 
-    /// If a serious error has occured, or a user has requested it, the AVM may be halted.
+    /// If a serious error has occurred, or a user has requested it, the AVM may be halted.
     /// This will completely prevent any further actions from being executed.
     halted: bool,
 
     /// The maximum amount of functions that can be called before a `Error::FunctionRecursionLimit`
     /// is raised. This defaults to 256 but can be changed per movie.
     max_recursion_depth: u16,
+
+    /// Whether a Mouse listener has been registered.
+    /// Used to prevent scrolling on web.
+    has_mouse_listener: bool,
 
     #[cfg(feature = "avm_debug")]
     pub debug_output: bool,
@@ -149,6 +154,7 @@ impl<'gc> Avm1<'gc> {
             ],
             halted: false,
             max_recursion_depth: 255,
+            has_mouse_listener: false,
 
             #[cfg(feature = "avm_debug")]
             debug_output: false,
@@ -338,7 +344,7 @@ impl<'gc> Avm1<'gc> {
         active_clip: DisplayObject<'gc>,
         swf_version: u8,
         context: &mut UpdateContext<'_, 'gc, '_>,
-        broadcaster: &str,
+        broadcaster_name: &str,
         method: &str,
         args: &[Value<'gc>],
     ) {
@@ -353,11 +359,24 @@ impl<'gc> Avm1<'gc> {
         );
 
         let broadcaster = global
-            .get(broadcaster, &mut activation)
+            .get(broadcaster_name, &mut activation)
             .unwrap()
             .coerce_to_object(&mut activation);
 
-        let _ = as_broadcaster::broadcast_internal(&mut activation, broadcaster, args, method);
+        let has_listener =
+            as_broadcaster::broadcast_internal(&mut activation, broadcaster, args, method)
+                .unwrap_or(false);
+        drop(activation);
+
+        if broadcaster_name == "Mouse" {
+            context.avm1.has_mouse_listener = has_listener;
+        }
+    }
+
+    /// Returns true if the `Mouse` object has a listener registered.
+    /// Used to prevent mouse wheel scrolling on web.
+    pub fn has_mouse_listener(&self) -> bool {
+        self.has_mouse_listener
     }
 
     /// Halts the AVM, preventing execution of any further actions.
@@ -436,10 +455,10 @@ impl<'gc> Avm1<'gc> {
 
 pub fn root_error_handler<'gc>(activation: &mut Activation<'_, 'gc, '_>, error: Error<'gc>) {
     if let Error::ThrownValue(error) = &error {
-        let string = error
+        let message = error
             .coerce_to_string(activation)
             .unwrap_or_else(|_| "undefined".into());
-        log::info!(target: "avm_trace", "{}", string);
+        activation.context.log.avm_trace(&message);
     } else {
         log::error!("{}", error);
     }

@@ -13,15 +13,86 @@ function wait_for_ruffle(browser) {
     browser.waitUntil(() => is_ruffle_loaded(browser), {
         timeoutMsg: "Expected Ruffle to load",
     });
+    throw_if_error(browser);
+}
+
+function setup_error_handler(browser) {
+    browser.execute(() => {
+        window.ruffleErrors = [];
+        window.addEventListener("error", (error) => {
+            window.ruffleErrors.push(error);
+        });
+    });
+}
+
+function has_error(browser) {
+    return browser.execute(
+        () => window.ruffleErrors && window.ruffleErrors.length > 0
+    );
+}
+
+function throw_if_error(browser) {
+    return browser.execute(() => {
+        if (window.ruffleErrors && window.ruffleErrors.length > 0) {
+            throw window.ruffleErrors[0];
+        }
+    });
 }
 
 function inject_ruffle(browser) {
+    setup_error_handler(browser);
     browser.execute(() => {
         const script = document.createElement("script");
         script.type = "text/javascript";
         script.src = "/dist/ruffle.js";
         document.head.appendChild(script);
     });
+    throw_if_error(browser);
+}
+
+function play_and_monitor(browser, player) {
+    throw_if_error(browser);
+
+    // TODO: better way to test for this in the API
+    browser.waitUntil(
+        () => {
+            return (
+                has_error(browser) ||
+                browser.execute((player) => {
+                    return (
+                        player.play_button_clicked !== undefined &&
+                        player.instance
+                    );
+                }, player)
+            );
+        },
+        {
+            timeoutMsg: "Expected player to have initialized",
+        }
+    );
+
+    browser.execute((player) => {
+        player.__ruffle_log__ = "";
+        player.trace_observer = (msg) => {
+            player.__ruffle_log__ += msg + "\n";
+        };
+
+        // TODO: make this an actual intended api...
+        player.play_button_clicked();
+    }, player);
+
+    browser.waitUntil(
+        () => {
+            return (
+                browser.execute((player) => {
+                    return player.__ruffle_log__;
+                }, player) === "Hello from Flash!\n"
+            );
+        },
+        {
+            timeoutMsg: "Expected Ruffle to trace a message",
+        }
+    );
 }
 
 function inject_ruffle_and_wait(browser) {
@@ -40,6 +111,7 @@ function open_test(browser, absolute_dir, file_name) {
 module.exports = {
     is_ruffle_loaded,
     wait_for_ruffle,
+    play_and_monitor,
     inject_ruffle,
     inject_ruffle_and_wait,
     open_test,

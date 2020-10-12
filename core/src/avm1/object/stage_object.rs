@@ -47,8 +47,10 @@ impl<'gc> StageObject<'gc> {
     ) -> Self {
         let mut base = ScriptObject::object(gc_context, proto);
 
-        //TODO: Do other display node objects have different typestrings?
-        base.set_type_of(gc_context, TYPE_OF_MOVIE_CLIP);
+        // Movieclips have a special typeof "movieclip", while others are the default "object".
+        if display_object.as_movie_clip().is_some() {
+            base.set_type_of(gc_context, TYPE_OF_MOVIE_CLIP);
+        }
 
         Self(GcCell::allocate(
             gc_context,
@@ -188,7 +190,7 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         }
 
         if obj.base.has_own_property(activation, name) {
-            // 1) Actual proeprties on the underlying object
+            // 1) Actual properties on the underlying object
             obj.base.internal_set(
                 name,
                 value,
@@ -270,7 +272,7 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
     }
 
     fn set_attributes(
-        &mut self,
+        &self,
         gc_context: MutationContext<'gc, '_>,
         name: Option<&str>,
         set_attributes: EnumSet<Attribute>,
@@ -438,7 +440,7 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         self.0.read().base.interfaces()
     }
 
-    fn set_interfaces(&mut self, context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>) {
+    fn set_interfaces(&self, context: MutationContext<'gc, '_>, iface_list: Vec<Object<'gc>>) {
         self.0
             .write(context)
             .base
@@ -592,7 +594,7 @@ fn x<'gc>(
 
 fn set_x<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(val) = property_coerce_to_number(activation, val)? {
@@ -610,7 +612,7 @@ fn y<'gc>(
 
 fn set_y<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(val) = property_coerce_to_number(activation, val)? {
@@ -621,38 +623,38 @@ fn set_y<'gc>(
 
 fn x_scale<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let val = this.scale_x(activation.context.gc_context) * 100.0;
+    let val: f64 = this.scale_x(activation.context.gc_context).into();
     Ok(val.into())
 }
 
 fn set_x_scale<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(val) = property_coerce_to_number(activation, val)? {
-        this.set_scale_x(activation.context.gc_context, val / 100.0);
+        this.set_scale_x(activation.context.gc_context, val.into());
     }
     Ok(())
 }
 
 fn y_scale<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let scale_y = this.scale_y(activation.context.gc_context) * 100.0;
+    let scale_y: f64 = this.scale_y(activation.context.gc_context).into();
     Ok(scale_y.into())
 }
 
 fn set_y_scale<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(val) = property_coerce_to_number(activation, val)? {
-        this.set_scale_y(activation.context.gc_context, val / 100.0);
+        this.set_scale_y(activation.context.gc_context, val.into());
     }
     Ok(())
 }
@@ -708,7 +710,7 @@ fn visible<'gc>(
 
 fn set_visible<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     // Because this property dates to the era of Flash 4, this is actually coerced to an integer.
@@ -728,7 +730,7 @@ fn width<'gc>(
 
 fn set_width<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(val) = property_coerce_to_number(activation, val)? {
@@ -746,7 +748,7 @@ fn height<'gc>(
 
 fn set_height<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(val) = property_coerce_to_number(activation, val)? {
@@ -757,17 +759,15 @@ fn set_height<'gc>(
 
 fn rotation<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok(this
-        .rotation(activation.context.gc_context)
-        .to_degrees()
-        .into())
+    let degrees: f64 = this.rotation(activation.context.gc_context).into();
+    Ok(degrees.into())
 }
 
 fn set_rotation<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     degrees: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     if let Some(mut degrees) = property_coerce_to_number(activation, degrees)? {
@@ -778,7 +778,7 @@ fn set_rotation<'gc>(
         } else if degrees > 180.0 {
             degrees -= 360.0
         }
-        this.set_rotation(activation.context.gc_context, degrees.to_radians());
+        this.set_rotation(activation.context.gc_context, degrees.into());
     }
     Ok(())
 }
@@ -810,7 +810,7 @@ fn name<'gc>(
 
 fn set_name<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    mut this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
     val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     let name = val.coerce_to_string(activation)?;
