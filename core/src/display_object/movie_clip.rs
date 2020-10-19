@@ -466,6 +466,7 @@ impl<'gc> MovieClip<'gc> {
         let flags = reader.read_u32()?;
         let name = reader.read_c_string()?;
         let is_lazy_initialize = flags & 1 != 0;
+        let domain = library.avm2_domain();
 
         // The rest of the tag is an ABC file so we can take our SwfSlice now.
         let slice = self
@@ -481,7 +482,7 @@ impl<'gc> MovieClip<'gc> {
                 )
             })?;
 
-        if let Err(e) = Avm2::load_abc(slice, &name, is_lazy_initialize, context) {
+        if let Err(e) = Avm2::load_abc(slice, &name, is_lazy_initialize, context, domain) {
             log::warn!("Error loading ABC file: {}", e);
         }
 
@@ -508,11 +509,16 @@ impl<'gc> MovieClip<'gc> {
             if let Some(name) =
                 Avm2QName::from_symbol_class(&class_name, activation.context.gc_context)
             {
-                let mut globals = activation.context.avm2.globals();
-                match globals
-                    .get_property(globals, &name, &mut activation)
-                    .and_then(|v| v.coerce_to_object(&mut activation))
-                {
+                let library = activation
+                    .context
+                    .library
+                    .library_for_movie_mut(movie.clone());
+                let domain = library.avm2_domain();
+                let proto = domain
+                    .get_defined_value(&mut activation, name.clone())
+                    .and_then(|v| v.coerce_to_object(&mut activation));
+
+                match proto {
                     Ok(proto) => {
                         let library = activation
                             .context
@@ -2151,10 +2157,6 @@ impl<'gc, 'a> MovieClipData<'gc> {
         version: u8,
     ) -> DecodeResult {
         let define_bits_lossless = reader.read_define_bits_lossless(version)?;
-        log::info!("id: {}", define_bits_lossless.id);
-        if define_bits_lossless.id == 53 {
-            log::info!("53");
-        }
         let bitmap_info = context
             .renderer
             .register_bitmap_png(&define_bits_lossless)?;

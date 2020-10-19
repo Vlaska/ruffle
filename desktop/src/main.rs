@@ -17,7 +17,7 @@ use ruffle_core::{
     Player,
 };
 use ruffle_render_wgpu::WgpuRenderBackend;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -42,6 +42,11 @@ struct Opt {
     #[clap(name = "FILE", parse(from_os_str))]
     input_path: PathBuf,
 
+    /// A "flashvars" parameter to provide to the movie.
+    /// This can be repeated multiple times, for example -Pkey=value -Pfoo=bar
+    #[clap(short = 'P', number_of_values = 1)]
+    parameters: Vec<String>,
+
     /// Type of graphics backend to use. Not all options may be supported by your current system.
     /// Default will attempt to pick the most supported graphics backend.
     #[clap(
@@ -55,16 +60,28 @@ struct Opt {
 
     /// Power preference for the graphics device used. High power usage tends to prefer dedicated GPUs,
     /// whereas a low power usage tends prefer integrated GPUs.
-    /// Default will pick the best device depending on the status of your computer (ie, wall-power
-    /// may choose high, battery power may choose low)
-    #[clap(
-        long,
-        short,
-        case_insensitive = true,
-        default_value = "default",
-        arg_enum
-    )]
+    #[clap(long, short, case_insensitive = true, default_value = "high", arg_enum)]
     power: PowerPreference,
+
+    /// Location to store a wgpu trace output
+    #[clap(long, parse(from_os_str))]
+    #[cfg(feature = "render_trace")]
+    trace_path: Option<PathBuf>,
+}
+
+#[cfg(feature = "render_trace")]
+fn trace_path(opt: &Opt) -> Option<&Path> {
+    if let Some(path) = &opt.trace_path {
+        let _ = std::fs::create_dir_all(path);
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(feature = "render_trace"))]
+fn trace_path(_opt: &Opt) -> Option<&Path> {
+    None
 }
 
 fn main() {
@@ -74,7 +91,7 @@ fn main() {
 
     let opt = Opt::parse();
 
-    let ret = run_player(opt.input_path, opt.graphics, opt.power);
+    let ret = run_player(opt);
 
     if let Err(e) = ret {
         eprintln!("Fatal error:\n{}", e);
@@ -82,13 +99,20 @@ fn main() {
     }
 }
 
-fn run_player(
-    input_path: PathBuf,
-    graphics: GraphicsBackend,
-    power_preference: PowerPreference,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let movie = SwfMovie::from_path(&input_path)?;
+fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
+    let mut movie = SwfMovie::from_path(&opt.input_path)?;
     let movie_size = LogicalSize::new(movie.width(), movie.height());
+
+    for parameter in &opt.parameters {
+        let mut split = parameter.splitn(2, '=');
+        if let (Some(key), Some(value)) = (split.next(), split.next()) {
+            movie.parameters_mut().insert(key, value.to_string(), true);
+        } else {
+            movie
+                .parameters_mut()
+                .insert(&parameter, "".to_string(), true);
+        }
+    }
 
     let icon_bytes = include_bytes!("../assets/favicon-32.rgba");
     let icon = Icon::from_rgba(icon_bytes.to_vec(), 32, 32)?;
@@ -98,7 +122,10 @@ fn run_player(
         WindowBuilder::new()
             .with_title(format!(
                 "Ruffle - {}",
-                input_path.file_name().unwrap_or_default().to_string_lossy()
+                opt.input_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
             ))
             .with_window_icon(Some(icon))
             .with_inner_size(movie_size)
@@ -116,12 +143,13 @@ fn run_player(
     let renderer = Box::new(WgpuRenderBackend::for_window(
         window.as_ref(),
         (viewport_size.width, viewport_size.height),
-        graphics.into(),
-        power_preference.into(),
+        opt.graphics.into(),
+        opt.power.into(),
+        trace_path(&opt),
     )?);
     let (executor, chan) = GlutinAsyncExecutor::new(event_loop.create_proxy());
     let navigator = Box::new(navigator::ExternalNavigatorBackend::with_base_path(
-        input_path
+        opt.input_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("")),
         chan,
@@ -129,7 +157,7 @@ fn run_player(
     )); //TODO: actually implement this backend type
     let input = Box::new(input::WinitInputBackend::new(window.clone()));
     let storage = Box::new(DiskStorageBackend::new(
-        input_path.file_name().unwrap_or_default().as_ref(),
+        opt.input_path.file_name().unwrap_or_default().as_ref(),
     ));
     let locale = Box::new(locale::DesktopLocaleBackend::new());
     let player = Player::new(

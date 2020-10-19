@@ -678,7 +678,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             avm_warn!(self, "CloneSprite: Source is not a movie clip");
         }
 
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_bit_and(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -796,7 +796,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         self.context.avm1.push(result);
 
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_call_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -834,7 +834,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             }
         }
 
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_cast_op(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1205,8 +1205,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     e
                 ),
             }
-
-            return Ok(FrameControl::Continue);
+            return self.continue_if_base_clip_exists();
         }
 
         if let Some(fscommand) = fscommand::parse(url) {
@@ -1295,8 +1294,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     self.context.navigator.spawn_future(process);
                 }
             }
-
-            return Ok(FrameControl::Continue);
+            return self.continue_if_base_clip_exists();
         } else if window_target.starts_with("_level") && url.len() > 6 {
             // target of `_level#` indicates a `loadMovieNum` call.
             match window_target[6..].parse::<u32>() {
@@ -1348,7 +1346,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_error!(self, "GotoFrame failed: Invalid target");
         }
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_goto_frame_2(
@@ -1374,7 +1372,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "GotoFrame2: Invalid target");
         }
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_goto_label(&mut self, label: &str) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1391,7 +1389,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "GoToLabel: Invalid target");
         }
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_if(
@@ -1619,7 +1617,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "NextFrame: Invalid target");
         }
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_new_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1647,7 +1645,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             self.context.avm1.push(Value::Undefined);
         }
 
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_new_object(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1666,7 +1664,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         self.context.avm1.push(this);
 
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_or(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1702,7 +1700,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "PrevFrame: Invalid target");
         }
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_pop(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1776,7 +1774,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "RemoveSprite: Source is not a movie clip");
         }
-        Ok(FrameControl::Continue)
+        self.continue_if_base_clip_exists()
     }
 
     fn action_return(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -2878,5 +2876,16 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     pub fn set_constant_pool(&mut self, constant_pool: GcCell<'gc, Vec<String>>) {
         self.constant_pool = constant_pool;
+    }
+
+    /// Checks that the clip executing a script still exists.
+    /// If the clip executing a script is removed during exectuion, return from this activation.
+    /// Should be called after any action that could potentially destroy a clip (gotos, etc.)
+    fn continue_if_base_clip_exists(&self) -> Result<FrameControl<'gc>, Error<'gc>> {
+        if self.base_clip.removed() {
+            Ok(FrameControl::Return(ReturnType::Explicit(Value::Undefined)))
+        } else {
+            Ok(FrameControl::Continue)
+        }
     }
 }

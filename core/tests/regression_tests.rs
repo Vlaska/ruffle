@@ -260,6 +260,7 @@ swf_tests! {
     (bitmap_filter, "avm1/bitmap_filter", 1),
     (blur_filter, "avm1/blur_filter", 1),
     (date_constructor, "avm1/date/constructor", 1),
+    (removed_clip_halts_script, "avm1/removed_clip_halts_script", 5),
     (date_utc, "avm1/date/UTC", 1),
     (date_set_date, "avm1/date/setDate", 1),
     (date_set_full_year, "avm1/date/setFullYear", 1),
@@ -402,6 +403,7 @@ swf_tests! {
     (as3_movieclip_scenes, "avm2/movieclip_scenes", 5),
     (as3_movieclip_play, "avm2/movieclip_play", 5),
     (as3_movieclip_constr, "avm2/movieclip_constr", 1),
+    (as3_lazyinit, "avm2/lazyinit", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
