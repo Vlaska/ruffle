@@ -9,7 +9,7 @@ use gc_arena::Collect;
 /// This primary purpose of this type is to communicate if a movie clip is
 /// being created on an AVM stack, and if so, which type. If it is on-stack,
 /// then it needs to be constructed immediately before user code can continue
-/// running. Otherwise, it's constructor should be queued to run later.
+/// running. Otherwise, its constructor should be queued to run later.
 ///
 /// A secondary purpose of this type is to flag which VM is creating an object,
 /// which can be used to ensure the object is instantiated as tied to the
@@ -50,11 +50,7 @@ impl Instantiator {
     /// If that is the case, then any constructor calls necessary to finish the
     /// object must happen on-stack.
     pub fn is_avm(self) -> bool {
-        match self {
-            Self::Avm1 => true,
-            Self::Avm2 => true,
-            _ => false,
-        }
+        matches!(self, Self::Avm1 | Self::Avm2)
     }
 }
 

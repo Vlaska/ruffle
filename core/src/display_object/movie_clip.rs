@@ -59,6 +59,8 @@ pub struct MovieClipData<'gc> {
     flags: EnumSet<MovieClipFlags>,
     avm_constructor: Option<AvmObject<'gc>>,
     drawing: Drawing,
+    is_focusable: bool,
+    has_focus: bool,
 }
 
 unsafe impl<'gc> Collect for MovieClipData<'gc> {
@@ -94,6 +96,8 @@ impl<'gc> MovieClip<'gc> {
                 flags: EnumSet::empty(),
                 avm_constructor: None,
                 drawing: Drawing::new(),
+                is_focusable: false,
+                has_focus: false,
             },
         ))
     }
@@ -130,6 +134,8 @@ impl<'gc> MovieClip<'gc> {
                 flags: MovieClipFlags::Playing.into(),
                 avm_constructor: None,
                 drawing: Drawing::new(),
+                is_focusable: false,
+                has_focus: false,
             },
         ))
     }
@@ -1172,7 +1178,7 @@ impl<'gc> MovieClip<'gc> {
             .instantiate_by_id(id, context.gc_context)
         {
             // Remove previous child from children list,
-            // and add new childonto front of the list.
+            // and add new child onto front of the list.
             let prev_child = {
                 let mut mc = self.0.write(context.gc_context);
                 let prev_child = mc.children.insert(depth, child);
@@ -1354,7 +1360,7 @@ impl<'gc> MovieClip<'gc> {
                                 params: &GotoPlaceObject| {
             let child_entry = clip.0.read().children.get(&params.depth()).copied();
             match child_entry {
-                // Apply final delta to display pamareters.
+                // Apply final delta to display parameters.
                 // For rewinds, if an object was created before the final frame,
                 // it will exist on the final frame as well. Re-use this object
                 // instead of recreating.
@@ -1497,12 +1503,18 @@ impl<'gc> MovieClip<'gc> {
 
             let mut events = Vec::new();
 
-            for clip_action in mc
-                .clip_actions()
-                .iter()
-                .filter(|action| action.event == ClipEvent::Construct)
-            {
-                events.push(clip_action.action_data.clone());
+            for clip_action in mc.clip_actions().iter() {
+                match clip_action.event {
+                    ClipEvent::Initialize => context.action_queue.queue_actions(
+                        display_object,
+                        ActionType::Initialize {
+                            bytecode: clip_action.action_data.clone(),
+                        },
+                        false,
+                    ),
+                    ClipEvent::Construct => events.push(clip_action.action_data.clone()),
+                    _ => (),
+                }
             }
 
             context.action_queue.queue_actions(
@@ -1614,6 +1626,10 @@ impl<'gc> MovieClip<'gc> {
             log::error!("Attempted to run AVM2 frame scripts on an AVM1 MovieClip.");
         }
     }
+
+    pub fn set_focusable(self, focusable: bool, context: &mut UpdateContext<'_, 'gc, '_>) {
+        self.0.write(context.gc_context).is_focusable = focusable;
+    }
 }
 
 impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
@@ -1664,8 +1680,8 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
 
     fn render(&self, context: &mut RenderContext<'_, 'gc>) {
         context.transform_stack.push(&*self.transform());
-        crate::display_object::render_children(context, &self.0.read().children);
         self.0.read().drawing.render(context);
+        crate::display_object::render_children(context, &self.0.read().children);
         context.transform_stack.pop();
     }
 
@@ -1824,6 +1840,12 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
             }
         }
 
+        let had_focus = self.0.read().has_focus;
+        if had_focus {
+            let tracker = context.focus_tracker;
+            tracker.set(None, context);
+        }
+
         {
             let mut mc = self.0.write(context.gc_context);
             mc.stop_audio_stream(context);
@@ -1838,6 +1860,14 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
 
     fn get_child_by_name(&self, name: &str, case_sensitive: bool) -> Option<DisplayObject<'gc>> {
         crate::display_object::get_child_by_name(&self.0.read().children, name, case_sensitive)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.0.read().is_focusable
+    }
+
+    fn on_focus_changed(&self, context: MutationContext<'gc, '_>, focused: bool) {
+        self.0.write(context).has_focus = focused;
     }
 }
 

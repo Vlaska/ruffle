@@ -16,6 +16,7 @@ use crate::display_object::{EditText, MorphShape, MovieClip};
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode, PlayerEvent};
 use crate::external::Value as ExternalValue;
 use crate::external::{ExternalInterface, ExternalInterfaceProvider};
+use crate::focus_tracker::FocusTracker;
 use crate::library::Library;
 use crate::loader::LoadManager;
 use crate::prelude::*;
@@ -81,8 +82,11 @@ struct GcRootData<'gc> {
     /// Timed callbacks created with `setInterval`/`setTimeout`.
     timers: Timers<'gc>,
 
-    /// External interface for (for example) Javascript <-> Actionscript interaction
+    /// External interface for (for example) JavaScript <-> ActionScript interaction
     external_interface: ExternalInterface<'gc>,
+
+    /// A tracker for the current keyboard focused element
+    focus_tracker: FocusTracker<'gc>,
 }
 
 impl<'gc> GcRootData<'gc> {
@@ -252,6 +256,7 @@ impl Player {
                         unbound_text_fields: Vec::new(),
                         timers: Timers::new(),
                         external_interface: ExternalInterface::new(),
+                        focus_tracker: FocusTracker::new(gc_context),
                     },
                 ))
             }),
@@ -293,7 +298,7 @@ impl Player {
                 Instantiator::Movie,
                 false,
             );
-            context.levels.insert(0 as u32, fake_root.into());
+            context.levels.insert(0u32, fake_root.into());
 
             Avm2::load_player_globals(context)
         })?;
@@ -613,8 +618,16 @@ impl Player {
                 }
             });
         }
-        // Propagte clip events.
 
+        if let PlayerEvent::TextInput { codepoint } = event {
+            self.mutate_with_update_context(|context| {
+                if let Some(text) = context.focus_tracker.get().and_then(|o| o.as_edit_text()) {
+                    text.text_input(codepoint, context);
+                }
+            });
+        }
+
+        // Propagte clip events.
         self.mutate_with_update_context(|context| {
             let (clip_event, listener) = match event {
                 PlayerEvent::KeyDown { .. } => {
@@ -762,7 +775,7 @@ impl Player {
                 // RollOver on new node.I still
                 new_cursor = MouseCursor::Arrow;
                 if let Some(node) = new_hovered {
-                    new_cursor = MouseCursor::Hand;
+                    new_cursor = node.mouse_cursor();
                     node.handle_clip_event(context, ClipEvent::RollOver);
                 }
 
@@ -847,6 +860,7 @@ impl Player {
                 transform_stack,
                 view_bounds,
                 clip_depth_stack: vec![],
+                allow_mask: true,
             };
 
             for (_depth, level) in root_data.levels.iter() {
@@ -907,7 +921,7 @@ impl Player {
 
             match actions.action_type {
                 // DoAction/clip event code
-                ActionType::Normal { bytecode } => {
+                ActionType::Normal { bytecode } | ActionType::Initialize { bytecode } => {
                     Avm1::run_stack_frame_for_action(
                         actions.clip,
                         "[Frame]",
@@ -1100,6 +1114,7 @@ impl Player {
         self.gc_arena.mutate(|gc_context, gc_root| {
             let mut root_data = gc_root.0.write(gc_context);
             let mouse_hovered_object = root_data.mouse_hovered_object;
+            let focus_tracker = root_data.focus_tracker;
             let (
                 levels,
                 library,
@@ -1148,6 +1163,7 @@ impl Player {
                 external_interface,
                 update_start: Instant::now(),
                 max_execution_duration,
+                focus_tracker,
             };
 
             let ret = f(&mut update_context);

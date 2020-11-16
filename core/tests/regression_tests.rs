@@ -2,7 +2,7 @@
 //!
 //! Trace output can be compared with correct output from the official Flash Payer.
 
-use approx::assert_abs_diff_eq;
+use approx::assert_relative_eq;
 use ruffle_core::backend::locale::NullLocaleBackend;
 use ruffle_core::backend::log::LogBackend;
 use ruffle_core::backend::navigator::{NullExecutor, NullNavigatorBackend};
@@ -45,7 +45,7 @@ macro_rules! swf_tests {
 
 // This macro generates test cases for a given list of SWFs using `test_swf_approx`.
 macro_rules! swf_tests_approx {
-    ($($(#[$attr:meta])* ($name:ident, $path:expr, $num_frames:literal, $epsilon:literal),)*) => {
+    ($($(#[$attr:meta])* ($name:ident, $path:expr, $num_frames:literal $(, $opt:ident = $val:expr)*),)*) => {
         $(
         #[test]
         $(#[$attr])*
@@ -54,7 +54,8 @@ macro_rules! swf_tests_approx {
                 concat!("tests/swfs/", $path, "/test.swf"),
                 $num_frames,
                 concat!("tests/swfs/", $path, "/output.txt"),
-                $epsilon,
+                |actual, expected| assert_relative_eq!(actual, expected $(, $opt = $val)*),
+                //$relative_epsilon,
                 |_| Ok(()),
                 |_| Ok(()),
             )
@@ -77,6 +78,7 @@ swf_tests! {
     (call, "avm1/call", 2),
     (color, "avm1/color", 1),
     (clip_events, "avm1/clip_events", 4),
+    (unload_clip_event, "avm1/unload_clip_event", 2),
     (create_empty_movie_clip, "avm1/create_empty_movie_clip", 2),
     (empty_movieclip_can_attach_movies, "avm1/empty_movieclip_can_attach_movies", 1),
     (duplicate_movie_clip, "avm1/duplicate_movie_clip", 1),
@@ -115,6 +117,7 @@ swf_tests! {
     (variable_args, "avm1/variable_args", 1),
     (custom_clip_methods, "avm1/custom_clip_methods", 3),
     (delete, "avm1/delete", 3),
+    (selection, "avm1/selection", 1),
     (default_names, "avm1/default_names", 6),
     (array_trivial, "avm1/array_trivial", 1),
     (array_concat, "avm1/array_concat", 1),
@@ -240,6 +243,7 @@ swf_tests! {
     #[ignore] (edittext_newlines, "avm1/edittext_newlines", 1),
     (edittext_html_entity, "avm1/edittext_html_entity", 1),
     #[ignore] (edittext_html_roundtrip, "avm1/edittext_html_roundtrip", 1),
+    (edittext_newline_stripping, "avm1/edittext_newline_stripping", 1),
     (define_local, "avm1/define_local", 1),
     (textfield_variable, "avm1/textfield_variable", 8),
     (error, "avm1/error", 1),
@@ -260,7 +264,7 @@ swf_tests! {
     (bitmap_filter, "avm1/bitmap_filter", 1),
     (blur_filter, "avm1/blur_filter", 1),
     (date_constructor, "avm1/date/constructor", 1),
-    (removed_clip_halts_script, "avm1/removed_clip_halts_script", 5),
+    (removed_clip_halts_script, "avm1/removed_clip_halts_script", 13),
     (date_utc, "avm1/date/UTC", 1),
     (date_set_date, "avm1/date/setDate", 1),
     (date_set_full_year, "avm1/date/setFullYear", 1),
@@ -404,24 +408,26 @@ swf_tests! {
     (as3_movieclip_play, "avm2/movieclip_play", 5),
     (as3_movieclip_constr, "avm2/movieclip_constr", 1),
     (as3_lazyinit, "avm2/lazyinit", 1),
+    (as3_trace, "avm2/trace", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
 // Eventually we can hopefully make some of these match exactly (see #193).
 // Some will probably always need to be approx. (if they rely on trig functions, etc.)
 swf_tests_approx! {
-    (local_to_global, "avm1/local_to_global", 1, 0.051),
-    (stage_object_properties, "avm1/stage_object_properties", 5, 0.051),
-    (stage_object_properties_swf6, "avm1/stage_object_properties_swf6", 4, 0.051),
-    (movieclip_getbounds, "avm1/movieclip_getbounds", 1, 0.051),
-    (edittext_letter_spacing, "avm1/edittext_letter_spacing", 1, 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
-    (edittext_align, "avm1/edittext_align", 1, 3.0),
-    (edittext_margins, "avm1/edittext_margins", 1, 5.0), // TODO: Discrepancy in wrapping.
-    (edittext_tab_stops, "avm1/edittext_tab_stops", 1, 5.0),
-    (edittext_bullet, "avm1/edittext_bullet", 1, 3.0),
-    (edittext_underline, "avm1/edittext_underline", 1, 4.0),
-    (as3_coerce_string_precision, "avm2/coerce_string_precision", 1, 10_000_000.0),
-    (as3_divide, "avm2/divide", 1, 0.0), // TODO: Discrepancy in float formatting.
+    (local_to_global, "avm1/local_to_global", 1, epsilon = 0.051),
+    (stage_object_properties, "avm1/stage_object_properties", 5, epsilon = 0.051),
+    (stage_object_properties_swf6, "avm1/stage_object_properties_swf6", 4, epsilon = 0.051),
+    (movieclip_getbounds, "avm1/movieclip_getbounds", 1, epsilon = 0.051),
+    (edittext_letter_spacing, "avm1/edittext_letter_spacing", 1, epsilon = 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
+    (edittext_align, "avm1/edittext_align", 1, epsilon = 3.0),
+    (edittext_margins, "avm1/edittext_margins", 1, epsilon = 5.0), // TODO: Discrepancy in wrapping.
+    (edittext_tab_stops, "avm1/edittext_tab_stops", 1, epsilon = 5.0),
+    (edittext_bullet, "avm1/edittext_bullet", 1, epsilon = 3.0),
+    (edittext_underline, "avm1/edittext_underline", 1, epsilon = 4.0),
+    (as3_coerce_string_precision, "avm2/coerce_string_precision", 1, max_relative = 30.0 * std::f64::EPSILON),
+    (as3_divide, "avm2/divide", 1, epsilon = 0.0), // TODO: Discrepancy in float formatting.
+    (as3_math, "avm2/math", 1, max_relative = 30.0 * std::f64::EPSILON),
 }
 
 #[test]
@@ -554,7 +560,7 @@ fn test_swf_approx(
     swf_path: &str,
     num_frames: u32,
     expected_output_path: &str,
-    epsilon: f64,
+    approx_assert_fn: impl Fn(f64, f64),
     before_start: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
     before_end: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -581,7 +587,17 @@ fn test_swf_approx(
             }
 
             // TODO: Lower this epsilon as the accuracy of the properties improves.
-            assert_abs_diff_eq!(actual, expected, epsilon = epsilon);
+            // if let Some(relative_epsilon) = relative_epsilon {
+            //     assert_relative_eq!(
+            //         actual,
+            //         expected,
+            //         epsilon = absolute_epsilon,
+            //         max_relative = relative_epsilon
+            //     );
+            // } else {
+            //     assert_abs_diff_eq!(actual, expected, epsilon = absolute_epsilon);
+            // }
+            approx_assert_fn(actual, expected);
         } else {
             assert_eq!(actual, expected);
         }
@@ -616,7 +632,7 @@ fn run_swf(
     player
         .lock()
         .unwrap()
-        .set_max_execution_duration(Duration::from_secs(120));
+        .set_max_execution_duration(Duration::from_secs(200));
 
     before_start(player.clone())?;
 

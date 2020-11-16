@@ -279,7 +279,7 @@ impl<'gc> Value<'gc> {
     /// `TypeError`.
     ///
     /// The `Hint` parameter selects if the coercion prefers `toString` or
-    /// `valueOf`. If the preferred function is not available, it's opposite
+    /// `valueOf`. If the preferred function is not available, its opposite
     /// will be called. If neither function successfully generates a primitive,
     /// a `TypeError` will be raised.
     ///
@@ -510,15 +510,15 @@ impl<'gc> Value<'gc> {
 
                 // TODO: This needs to limit precision in the resulting decimal
                 // output, not in binary.
-                let precision = (n * (10.0 as f64).powf(Self::MAX_PRECISION - digits)).floor()
-                    / (10.0 as f64).powf(Self::MAX_PRECISION - digits);
+                let precision = (n * 10.0_f64.powf(Self::MAX_PRECISION - digits)).floor()
+                    / 10.0_f64.powf(Self::MAX_PRECISION - digits);
 
                 if digits < Self::MIN_DIGITS || digits >= Self::MAX_DIGITS {
                     AvmString::new(
                         activation.context.gc_context,
                         format!(
                             "{}e{}{}",
-                            precision / (10.0 as f64).powf(digits),
+                            precision / 10.0_f64.powf(digits),
                             if digits < 0.0 { "-" } else { "+" },
                             digits.abs()
                         ),

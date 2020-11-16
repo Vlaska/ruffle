@@ -206,6 +206,7 @@ pub fn create_proto<'gc>(
     with_movie_clip_props!(
         proto, gc_context, fn_proto,
         "transform" => [transform, set_transform],
+        "focusEnabled" => [focus_enabled, set_focus_enabled],
     );
 
     object.into()
@@ -550,7 +551,10 @@ fn create_empty_movie_clip<'gc>(
                 .wrapping_add(AVM_DEPTH_BIAS),
         ),
         _ => {
-            avm_error!(activation, "MovieClip.attachMovie: Too few parameters");
+            avm_error!(
+                activation,
+                "MovieClip.createEmptyMovieClip: Too few parameters"
+            );
             return Ok(Value::Undefined);
         }
     };
@@ -657,7 +661,10 @@ pub fn duplicate_movie_clip_with_bias<'gc>(
             depth.coerce_to_i32(activation)?.wrapping_add(depth_bias),
         ),
         _ => {
-            avm_error!(activation, "MovieClip.attachMovie: Too few parameters");
+            avm_error!(
+                activation,
+                "MovieClip.duplicateMovieClip: Too few parameters"
+            );
             return Ok(Value::Undefined);
         }
     };
@@ -721,21 +728,19 @@ pub fn duplicate_movie_clip_with_bias<'gc>(
 }
 
 fn get_bytes_loaded<'gc>(
-    _movie_clip: MovieClip<'gc>,
+    movie_clip: MovieClip<'gc>,
     _activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    // TODO find a correct value
-    Ok(1.0.into())
+    Ok((movie_clip.movie().unwrap().data().len() + 20).into())
 }
 
 fn get_bytes_total<'gc>(
-    _movie_clip: MovieClip<'gc>,
+    movie_clip: MovieClip<'gc>,
     _activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    // TODO find a correct value
-    Ok(1.0.into())
+    Ok((movie_clip.movie().unwrap().data().len() + 20).into())
 }
 
 fn get_next_highest_depth<'gc>(
@@ -1184,5 +1189,24 @@ fn set_transform<'gc>(
 ) -> Result<(), Error<'gc>> {
     let transform = value.coerce_to_object(activation);
     crate::avm1::globals::transform::apply_to_display_object(activation, transform, this.into())?;
+    Ok(())
+}
+
+fn focus_enabled<'gc>(
+    this: MovieClip<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.is_focusable().into())
+}
+
+fn set_focus_enabled<'gc>(
+    this: MovieClip<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    value: Value<'gc>,
+) -> Result<(), Error<'gc>> {
+    this.set_focusable(
+        value.as_bool(activation.current_swf_version()),
+        &mut activation.context,
+    );
     Ok(())
 }

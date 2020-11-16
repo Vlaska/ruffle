@@ -11,6 +11,7 @@ use crate::backend::storage::StorageBackend;
 use crate::backend::{audio::AudioBackend, navigator::NavigatorBackend, render::RenderBackend};
 use crate::display_object::EditText;
 use crate::external::ExternalInterface;
+use crate::focus_tracker::FocusTracker;
 use crate::library::Library;
 use crate::loader::LoadManager;
 use crate::player::Player;
@@ -133,7 +134,7 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     /// The AVM2 global state.
     pub avm2: &'a mut Avm2<'gc>,
 
-    /// External interface for (for example) Javascript <-> Actionscript interaction
+    /// External interface for (for example) JavaScript <-> ActionScript interaction
     pub external_interface: &'a mut ExternalInterface<'gc>,
 
     /// The instant at which the current update started.
@@ -142,6 +143,9 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     /// The maximum amount of time that can be called before a `Error::ExecutionTimeout`
     /// is raised. This defaults to 15 seconds but can be changed.
     pub max_execution_duration: Duration,
+
+    /// A tracker for the current keyboard focused element
+    pub focus_tracker: FocusTracker<'gc>,
 }
 
 unsafe impl<'a, 'gc, 'gc_context> Collect for UpdateContext<'a, 'gc, 'gc_context> {
@@ -171,6 +175,7 @@ unsafe impl<'a, 'gc, 'gc_context> Collect for UpdateContext<'a, 'gc, 'gc_context
         self.timers.trace(cc);
         self.avm1.trace(cc);
         self.avm2.trace(cc);
+        self.focus_tracker.trace(cc);
     }
 }
 
@@ -179,7 +184,7 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
     /// a shorter internal lifetime.
     ///
     /// This is particularly useful for structures that may wish to hold an
-    /// update context without adding further lifetimes for it's borrowing.
+    /// update context without adding further lifetimes for its borrowing.
     /// Please note that you will not be able to use the original update
     /// context until this reborrowed copy has fallen out of scope.
     pub fn reborrow<'b>(&'b mut self) -> UpdateContext<'b, 'gc, 'gc_context>
@@ -220,6 +225,7 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
             external_interface: self.external_interface,
             update_start: self.update_start,
             max_execution_duration: self.max_execution_duration,
+            focus_tracker: self.focus_tracker,
         }
     }
 }
@@ -246,19 +252,21 @@ unsafe impl<'gc> Collect for QueuedActions<'gc> {
 
 /// Action and gotos need to be queued up to execute at the end of the frame.
 pub struct ActionQueue<'gc> {
-    change_prototype_queue: VecDeque<QueuedActions<'gc>>,
-    action_queue: VecDeque<QueuedActions<'gc>>,
+    /// Each priority is kept in a separate bucket.
+    action_queue: Vec<VecDeque<QueuedActions<'gc>>>,
 }
 
 impl<'gc> ActionQueue<'gc> {
     const DEFAULT_CAPACITY: usize = 32;
+    const NUM_PRIORITIES: usize = 3;
 
     /// Crates a new `ActionQueue` with an empty queue.
     pub fn new() -> Self {
-        Self {
-            change_prototype_queue: VecDeque::with_capacity(Self::DEFAULT_CAPACITY),
-            action_queue: VecDeque::with_capacity(Self::DEFAULT_CAPACITY),
+        let mut action_queue = Vec::with_capacity(Self::NUM_PRIORITIES);
+        for _ in 0..Self::NUM_PRIORITIES {
+            action_queue.push(VecDeque::with_capacity(Self::DEFAULT_CAPACITY))
         }
+        Self { action_queue }
     }
 
     /// Queues ActionScript to run for the given movie clip.
@@ -270,29 +278,27 @@ impl<'gc> ActionQueue<'gc> {
         action_type: ActionType<'gc>,
         is_unload: bool,
     ) {
-        // Prototype change goes a higher priority queue.
-        if let ActionType::Construct { .. } = action_type {
-            self.change_prototype_queue.push_back(QueuedActions {
-                clip,
-                action_type,
-                is_unload,
-            })
-        } else {
-            self.action_queue.push_back(QueuedActions {
-                clip,
-                action_type,
-                is_unload,
-            })
+        let priority = action_type.priority();
+        let action = QueuedActions {
+            clip,
+            action_type,
+            is_unload,
+        };
+        debug_assert!(priority < Self::NUM_PRIORITIES);
+        if let Some(queue) = self.action_queue.get_mut(priority) {
+            queue.push_back(action)
         }
     }
 
     /// Sorts and drains the actions from the queue.
     pub fn pop_action(&mut self) -> Option<QueuedActions<'gc>> {
-        if !self.change_prototype_queue.is_empty() {
-            self.change_prototype_queue.pop_front()
-        } else {
-            self.action_queue.pop_front()
+        for queue in self.action_queue.iter_mut().rev() {
+            let action = queue.pop_front();
+            if action.is_some() {
+                return action;
+            }
         }
+        None
     }
 }
 
@@ -305,8 +311,9 @@ impl<'gc> Default for ActionQueue<'gc> {
 unsafe impl<'gc> Collect for ActionQueue<'gc> {
     #[inline]
     fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.change_prototype_queue.iter().for_each(|o| o.trace(cc));
-        self.action_queue.iter().for_each(|o| o.trace(cc));
+        for queue in &self.action_queue {
+            queue.iter().for_each(|o| o.trace(cc));
+        }
     }
 }
 
@@ -326,6 +333,10 @@ pub struct RenderContext<'a, 'gc> {
 
     /// The stack of clip depths, used in masking.
     pub clip_depth_stack: Vec<Depth>,
+
+    /// Whether to allow pushing a new mask. A masker-inside-a-masker does not work in Flash, instead
+    /// causing the inner mask to be included as part of the outer mask. Maskee-inside-a-maskee works as one expects.
+    pub allow_mask: bool,
 }
 
 /// The type of action being run.
@@ -333,6 +344,9 @@ pub struct RenderContext<'a, 'gc> {
 pub enum ActionType<'gc> {
     /// Normal frame or event actions.
     Normal { bytecode: SwfSlice },
+
+    /// AVM1 initialize clip event
+    Initialize { bytecode: SwfSlice },
 
     /// Construct a movie with a custom class or on(construct) events
     Construct {
@@ -362,11 +376,25 @@ pub enum ActionType<'gc> {
     },
 }
 
+impl ActionType<'_> {
+    fn priority(&self) -> usize {
+        match self {
+            ActionType::Initialize { .. } => 2,
+            ActionType::Construct { .. } => 1,
+            _ => 0,
+        }
+    }
+}
+
 impl fmt::Debug for ActionType<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ActionType::Normal { bytecode } => f
                 .debug_struct("ActionType::Normal")
+                .field("bytecode", bytecode)
+                .finish(),
+            ActionType::Initialize { bytecode } => f
+                .debug_struct("ActionType::Initialize")
                 .field("bytecode", bytecode)
                 .finish(),
             ActionType::Construct {

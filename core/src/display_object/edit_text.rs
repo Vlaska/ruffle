@@ -1,12 +1,14 @@
 //! `EditText` display object and support code.
-use crate::avm1::activation::Activation;
+use crate::avm1::activation::{Activation, ActivationIdentifier};
 use crate::avm1::globals::text_field::attach_virtual_properties;
 use crate::avm1::{Avm1, AvmString, Object, StageObject, TObject, Value};
+use crate::backend::input::MouseCursor;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::drawing::Drawing;
+use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode};
 use crate::font::{round_down_to_pixel, Glyph};
-use crate::html::{BoxBounds, FormatSpans, LayoutBox, TextFormat};
+use crate::html::{BoxBounds, FormatSpans, LayoutBox, LayoutContent, TextFormat};
 use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
 use crate::tag_utils::SwfMovie;
@@ -14,6 +16,7 @@ use crate::transform::Transform;
 use crate::types::{Degrees, Percent};
 use crate::vminterface::Instantiator;
 use crate::xml::XMLDocument;
+use chrono::Utc;
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use std::{cell::Ref, sync::Arc};
 use swf::Twips;
@@ -74,6 +77,12 @@ pub struct EditTextData<'gc> {
     /// If the text is in multi-line mode or single-line mode.
     is_multiline: bool,
 
+    /// If the text can be selected by the user.
+    is_selectable: bool,
+
+    /// If the text can be edited by the user.
+    is_editable: bool,
+
     /// If the text is word-wrapped.
     is_word_wrap: bool,
 
@@ -114,6 +123,12 @@ pub struct EditTextData<'gc> {
 
     /// Whether this text field is firing is variable binding (to prevent infinite loops).
     firing_variable_binding: bool,
+
+    /// The selected portion of the text, or None if the text is not selected.
+    selection: Option<TextSelection>,
+
+    /// Whether or not this EditText has the current keyboard focus
+    has_focus: bool,
 }
 
 impl<'gc> EditText<'gc> {
@@ -125,6 +140,8 @@ impl<'gc> EditText<'gc> {
     ) -> Self {
         let is_multiline = swf_tag.is_multiline;
         let is_word_wrap = swf_tag.is_word_wrap;
+        let is_selectable = swf_tag.is_selectable;
+        let is_editable = !swf_tag.is_read_only;
         let is_html = swf_tag.is_html;
         let document = XMLDocument::new(context.gc_context);
         let text = swf_tag.initial_text.clone().unwrap_or_default();
@@ -141,6 +158,11 @@ impl<'gc> EditText<'gc> {
             text_spans.lower_from_html(document);
         } else {
             text_spans.replace_text(0, text_spans.text().len(), &text, Some(&default_format));
+        }
+
+        if !is_multiline {
+            let filtered = text_spans.text().replace("\n", "");
+            text_spans.replace_text(0, text_spans.text().len(), &filtered, Some(&default_format));
         }
 
         let bounds: BoundingBox = swf_tag.bounds.clone().into();
@@ -182,6 +204,8 @@ impl<'gc> EditText<'gc> {
                     },
                 ),
                 is_multiline,
+                is_selectable,
+                is_editable,
                 is_word_wrap,
                 has_border,
                 is_device_font,
@@ -195,6 +219,8 @@ impl<'gc> EditText<'gc> {
                 variable,
                 bound_stage_object: None,
                 firing_variable_binding: false,
+                selection: None,
+                has_focus: false,
             },
         ));
 
@@ -394,6 +420,14 @@ impl<'gc> EditText<'gc> {
         self.relayout(context);
     }
 
+    pub fn is_selectable(self) -> bool {
+        self.0.read().is_selectable
+    }
+
+    pub fn set_selectable(self, is_selectable: bool, context: &mut UpdateContext<'_, 'gc, '_>) {
+        self.0.write(context.gc_context).is_selectable = is_selectable;
+    }
+
     pub fn is_word_wrap(self) -> bool {
         self.0.read().is_word_wrap
     }
@@ -552,6 +586,14 @@ impl<'gc> EditText<'gc> {
                 Twips::new(1),
                 swf::Color::from_rgb(0, 0xFF),
             )));
+            write
+                .drawing
+                .set_fill_style(Some(swf::FillStyle::Color(Color {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                    a: 255,
+                })));
             write.drawing.draw_command(DrawCommand::MoveTo {
                 x: Twips::new(0),
                 y: Twips::new(0),
@@ -656,12 +698,32 @@ impl<'gc> EditText<'gc> {
         )
     }
 
-    /// Render a layout box, plus it's children.
+    /// Render a layout box, plus its children.
     fn render_layout_box(self, context: &mut RenderContext<'_, 'gc>, lbox: &LayoutBox<'gc>) {
         let box_transform: Transform = lbox.bounds().origin().into();
         context.transform_stack.push(&box_transform);
 
         let edit_text = self.0.read();
+        let selection = edit_text.selection;
+
+        let caret = if let LayoutContent::Text { start, end, .. } = &lbox.content() {
+            if let Some(selection) = selection {
+                if selection.is_caret()
+                    && edit_text.is_editable
+                    && selection.start() >= *start
+                    && selection.end() <= *end
+                    && Utc::now().timestamp_subsec_millis() / 500 == 0
+                {
+                    Some((selection.start() - start, end - start))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // If the font can't be found or has no glyph information, use the "device font" instead.
         // We're cheating a bit and not actually rendering text using the OS/web.
@@ -676,13 +738,65 @@ impl<'gc> EditText<'gc> {
                 text,
                 self.text_transform(color, baseline_adjustmnet),
                 params,
-                |transform, glyph: &Glyph, _advance| {
+                |pos, transform, glyph: &Glyph, advance, x| {
+                    // If it's highlighted, override the color.
+                    // TODO: We should draw a black background and change the color to white,
+                    //  but for now let's just change it to be slightly different colour.
+                    match selection {
+                        Some(selection) if selection.contains(pos) => {
+                            context.transform_stack.push(&Transform {
+                                matrix: transform.matrix,
+                                color_transform: transform.color_transform
+                                    * ColorTransform {
+                                        r_mult: 0.75,
+                                        g_mult: 0.75,
+                                        b_mult: 0.75,
+                                        a_mult: 1.0,
+                                        r_add: 0.0,
+                                        g_add: 0.0,
+                                        b_add: 1.0,
+                                        a_add: 0.0,
+                                    },
+                            });
+                        }
+                        _ => {
+                            context.transform_stack.push(&transform);
+                        }
+                    }
+
                     // Render glyph.
-                    context.transform_stack.push(transform);
                     context
                         .renderer
                         .render_shape(glyph.shape_handle, context.transform_stack.transform());
                     context.transform_stack.pop();
+
+                    if let Some((caret_pos, length)) = caret {
+                        if caret_pos == pos {
+                            let caret = context.transform_stack.transform().matrix
+                                * Matrix::create_box(
+                                    1.0,
+                                    params.height().to_pixels() as f32,
+                                    0.0,
+                                    x + Twips::from_pixels(-1.0),
+                                    Twips::from_pixels(2.0),
+                                );
+                            context
+                                .renderer
+                                .draw_rect(Color::from_rgb(0x000000, 0xFF), &caret);
+                        } else if pos == length - 1 && caret_pos == length {
+                            let caret = context.transform_stack.transform().matrix
+                                * Matrix::create_box(
+                                    1.0,
+                                    params.height().to_pixels() as f32,
+                                    0.0,
+                                    x + advance,
+                                    Twips::from_pixels(2.0),
+                                );
+                            context
+                                .renderer
+                                .draw_rect(Color::from_rgb(0x000000, 0xFF), &caret);
+                        }
+                    }
                 },
             );
         }
@@ -738,7 +852,7 @@ impl<'gc> EditText<'gc> {
                                     &mut activation.context,
                                 );
                             } else {
-                                // Otherwise, we initialize the proprty with the text field's text, if it's non-empty.
+                                // Otherwise, we initialize the property with the text field's text, if it's non-empty.
                                 // Note that HTML text fields are often initialized with an empty <p> tag, which is not considered empty.
                                 let text = self.text();
                                 if !text.is_empty() {
@@ -821,6 +935,142 @@ impl<'gc> EditText<'gc> {
             self.0
                 .write(activation.context.gc_context)
                 .firing_variable_binding = false;
+        }
+    }
+
+    pub fn selection(self) -> Option<TextSelection> {
+        self.0.read().selection
+    }
+
+    pub fn set_selection(
+        self,
+        selection: Option<TextSelection>,
+        gc_context: MutationContext<'gc, '_>,
+    ) {
+        let mut text = self.0.write(gc_context);
+        if let Some(mut selection) = selection {
+            selection.clamp(text.text_spans.text().len());
+            text.selection = Some(selection);
+        } else {
+            text.selection = None;
+        }
+    }
+
+    pub fn screen_position_to_index(self, position: (Twips, Twips)) -> Option<usize> {
+        let text = self.0.read();
+        let position = self.global_to_local(position);
+        let position = (
+            position.0 + Twips::from_pixels(Self::INTERNAL_PADDING),
+            position.1 + Twips::from_pixels(Self::INTERNAL_PADDING),
+        );
+
+        for layout_box in text.layout.iter() {
+            let transform: Transform = layout_box.bounds().origin().into();
+            let mut matrix = transform.matrix;
+            matrix.invert();
+            let local_position = matrix * position;
+
+            if let Some((text, _tf, font, params, color)) =
+                layout_box.as_renderable_text(text.text_spans.text())
+            {
+                let mut result = None;
+                let baseline_adjustment =
+                    font.get_baseline_for_height(params.height()) - params.height();
+                font.evaluate(
+                    text,
+                    self.text_transform(color, baseline_adjustment),
+                    params,
+                    |pos, _transform, _glyph: &Glyph, advance, x| {
+                        if local_position.0 >= x
+                            && local_position.0 <= x + advance
+                            && local_position.1 >= Twips::zero()
+                            && local_position.1 <= params.height()
+                        {
+                            if local_position.0 >= x + (advance / 2) {
+                                result = Some(pos + 1);
+                            } else {
+                                result = Some(pos);
+                            }
+                        }
+                    },
+                );
+                if result.is_some() {
+                    return result;
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn text_input(self, character: char, context: &mut UpdateContext<'_, 'gc, '_>) {
+        if !self.0.read().is_editable {
+            return;
+        }
+
+        if let Some(selection) = self.selection() {
+            let mut changed = false;
+            match character as u8 {
+                8 | 127 if !selection.is_caret() => {
+                    // Backspace or delete with multiple characters selected
+                    self.replace_text(selection.start(), selection.end(), "", context);
+                    self.set_selection(
+                        Some(TextSelection::for_position(selection.start())),
+                        context.gc_context,
+                    );
+                    changed = true;
+                }
+                8 => {
+                    // Backspace with caret
+                    if selection.start() > 0 {
+                        // Delete previous character
+                        self.replace_text(selection.start() - 1, selection.start(), "", context);
+                        self.set_selection(
+                            Some(TextSelection::for_position(selection.start() - 1)),
+                            context.gc_context,
+                        );
+                        changed = true;
+                    }
+                }
+                127 => {
+                    // Delete with caret
+                    if selection.end() < self.text_length() {
+                        // Delete next character
+                        self.replace_text(selection.start(), selection.start() + 1, "", context);
+                        // No need to change selection
+                        changed = true;
+                    }
+                }
+                32..=126 => {
+                    // ASCII
+                    // TODO: Make this actually good and not basic ASCII :)
+                    self.replace_text(
+                        selection.start(),
+                        selection.end(),
+                        &character.to_string(),
+                        context,
+                    );
+                    self.set_selection(
+                        Some(TextSelection::for_position(selection.start() + 1)),
+                        context.gc_context,
+                    );
+                    changed = true;
+                }
+                _ => {}
+            }
+
+            if changed {
+                let globals = context.avm1.global_object_cell();
+                let swf_version = context.swf.header().version;
+                let mut activation = Activation::from_nothing(
+                    context.reborrow(),
+                    ActivationIdentifier::root("[Propagate Text Binding]"),
+                    swf_version,
+                    globals,
+                    self.into(),
+                );
+                self.propagate_text_binding(&mut activation);
+            }
         }
     }
 }
@@ -1025,8 +1275,34 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             ..Default::default()
         });
 
-        for layout_box in edit_text.layout.iter() {
-            self.render_layout_box(context, layout_box);
+        if edit_text.layout.is_empty() && edit_text.is_editable {
+            let selection = edit_text.selection;
+            if let Some(selection) = selection {
+                if selection.is_caret()
+                    && selection.start() == 0
+                    && Utc::now().timestamp_subsec_millis() / 500 == 0
+                {
+                    let caret = context.transform_stack.transform().matrix
+                        * Matrix::create_box(
+                            1.0,
+                            edit_text
+                                .text_spans
+                                .default_format()
+                                .size
+                                .unwrap_or_default() as f32,
+                            0.0,
+                            Twips::from_pixels(-1.0),
+                            Twips::from_pixels(2.0),
+                        );
+                    context
+                        .renderer
+                        .draw_rect(Color::from_rgb(0x000000, 0xFF), &caret);
+                }
+            }
+        } else {
+            for layout_box in edit_text.layout.iter() {
+                self.render_layout_box(context, layout_box);
+            }
         }
 
         context.renderer.deactivate_mask();
@@ -1046,6 +1322,12 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     }
 
     fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        let had_focus = self.0.read().has_focus;
+        if had_focus {
+            let tracker = context.focus_tracker;
+            tracker.set(None, context);
+        }
+
         // Unbind any display objects bound to this text.
         if let Some(stage_object) = self.0.write(context.gc_context).bound_stage_object.take() {
             stage_object.clear_text_field_binding(context.gc_context, *self);
@@ -1065,6 +1347,92 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
 
         self.set_removed(context.gc_context, true);
     }
+
+    fn mouse_pick(
+        &self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        self_node: DisplayObject<'gc>,
+        point: (Twips, Twips),
+    ) -> Option<DisplayObject<'gc>> {
+        // The button is hovered if the mouse is over any child nodes.
+        if self.visible() && self.is_selectable() && self.hit_test_shape(context, point) {
+            Some(self_node)
+        } else {
+            None
+        }
+    }
+
+    fn mouse_cursor(&self) -> MouseCursor {
+        MouseCursor::IBeam
+    }
+
+    fn on_focus_changed(&self, context: MutationContext<'gc, '_>, focused: bool) {
+        let mut text = self.0.write(context);
+        text.has_focus = focused;
+        if !focused {
+            text.selection = None;
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        // Even if this isn't selectable or editable, a script can focus on it manually
+        true
+    }
+
+    fn handle_clip_event(
+        &self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        event: ClipEvent,
+    ) -> ClipEventResult {
+        match event {
+            ClipEvent::Press => {
+                let tracker = context.focus_tracker;
+                tracker.set(Some((*self).into()), context);
+                if let Some(position) = self
+                    .screen_position_to_index(*context.mouse_position)
+                    .map(TextSelection::for_position)
+                {
+                    self.0.write(context.gc_context).selection = Some(position);
+                } else {
+                    self.0.write(context.gc_context).selection =
+                        Some(TextSelection::for_position(self.text_length()));
+                }
+                ClipEventResult::Handled
+            }
+            ClipEvent::KeyPress { key_code } => {
+                let mut text = self.0.write(context.gc_context);
+                let selection = text.selection;
+                if let Some(mut selection) = selection {
+                    let length = text.text_spans.text().len();
+                    match key_code {
+                        ButtonKeyCode::Left if selection.to > 0 => {
+                            if context.input.is_key_down(KeyCode::Shift) {
+                                selection.to -= 1;
+                            } else {
+                                selection.to -= 1;
+                                selection.from = selection.to;
+                            }
+                        }
+                        ButtonKeyCode::Right if selection.to < length => {
+                            if context.input.is_key_down(KeyCode::Shift) {
+                                selection.to += 1;
+                            } else {
+                                selection.to += 1;
+                                selection.from = selection.to;
+                            }
+                        }
+                        _ => {}
+                    }
+                    selection.clamp(length);
+                    text.selection = Some(selection);
+                    ClipEventResult::Handled
+                } else {
+                    ClipEventResult::NotHandled
+                }
+            }
+            _ => ClipEventResult::NotHandled,
+        }
+    }
 }
 
 /// Static data shared between all instances of a text object.
@@ -1079,5 +1447,81 @@ unsafe impl<'gc> gc_arena::Collect for EditTextStatic {
     #[inline]
     fn needs_trace() -> bool {
         false
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TextSelection {
+    from: usize,
+    to: usize,
+}
+
+unsafe impl Collect for TextSelection {
+    #[inline]
+    fn needs_trace() -> bool {
+        false
+    }
+}
+
+impl TextSelection {
+    pub fn for_position(position: usize) -> Self {
+        Self {
+            from: position,
+            to: position,
+        }
+    }
+
+    pub fn for_range(from: usize, to: usize) -> Self {
+        Self { from, to }
+    }
+
+    /// The "from" part of the range is where the user started the selection.
+    /// It may be greater than "to", for example if the user dragged a selection box from right to
+    /// left.
+    pub fn from(&self) -> usize {
+        self.from
+    }
+
+    /// The "to" part of the range is where the user ended the selection.
+    /// This also may be called the caret position - it is the last place the user placed the
+    /// caret and any text or changes to the range will be done by this position.
+    /// It may be less than "from", for example if the user dragged a selection box from right to
+    /// left.
+    pub fn to(&self) -> usize {
+        self.to
+    }
+
+    /// The "start" part of the range is the smallest (closest to 0) part of this selection range.
+    pub fn start(&self) -> usize {
+        self.from.min(self.to)
+    }
+
+    /// The "end" part of the range is the smallest (closest to 0) part of this selection range.
+    pub fn end(&self) -> usize {
+        self.from.max(self.to)
+    }
+
+    /// Clamps this selection to the maximum length provided.
+    /// Neither from nor to will be greater than this length.
+    pub fn clamp(&mut self, length: usize) {
+        if self.from > length {
+            self.from = length;
+        }
+        if self.to > length {
+            self.to = length;
+        }
+    }
+
+    /// Checks whether the given position falls within the range of this selection
+    pub fn contains(&self, pos: usize) -> bool {
+        pos >= self.start() && pos < self.end()
+    }
+
+    /// Returns true if this selection is a singular caret within the text,
+    /// as opposed to multiple characters.
+    /// If this is true, text is inserted at the position.
+    /// If this is false, text is replaced at the positions.
+    pub fn is_caret(&self) -> bool {
+        self.to == self.from
     }
 }

@@ -24,10 +24,11 @@ mod movie_clip;
 mod text;
 
 use crate::avm1::activation::Activation;
+use crate::backend::input::MouseCursor;
 use crate::events::{ClipEvent, ClipEventResult};
 pub use bitmap::Bitmap;
 pub use button::Button;
-pub use edit_text::{AutoSizeMode, EditText};
+pub use edit_text::{AutoSizeMode, EditText, TextSelection};
 pub use graphic::Graphic;
 pub use morph_shape::{MorphShape, MorphShapeStatic};
 pub use movie_clip::{MovieClip, Scene};
@@ -720,6 +721,16 @@ pub trait TDisplayObject<'gc>:
     /// When this flag is set, changes from SWF `PlaceObject` tags are ignored.
     fn set_transformed_by_script(&self, context: MutationContext<'gc, '_>, value: bool);
 
+    /// Called whenever the focus tracker has deemed this display object worthy, or no longer worthy,
+    /// of being the currently focused object.
+    /// This should only be called by the focus manager. To change a focus, go through that.
+    fn on_focus_changed(&self, _context: MutationContext<'gc, '_>, _focused: bool) {}
+
+    /// Whether or not this clip may be focusable for keyboard input.
+    fn is_focusable(&self) -> bool {
+        false
+    }
+
     /// Executes and propagates the given clip event.
     /// Events execute inside-out; the deepest child will react first, followed by its parent, and
     /// so forth.
@@ -890,6 +901,11 @@ pub trait TDisplayObject<'gc>:
     /// This is used by movie clips to disable the mask when there are no children, for example.
     fn allow_as_mask(&self) -> bool {
         true
+    }
+
+    /// The cursor to use when this object is the hovered element under a mouse
+    fn mouse_cursor(&self) -> MouseCursor {
+        MouseCursor::Hand
     }
 
     /// Obtain the top-most parent of the display tree hierarchy.
@@ -1160,15 +1176,19 @@ pub fn render_children<'gc>(
             let (prev_clip_depth, clip_child) = clip_depth_stack.pop().unwrap();
             clip_depth = prev_clip_depth;
             context.renderer.deactivate_mask();
+            context.allow_mask = false;
             clip_child.render(context);
+            context.allow_mask = true;
             context.renderer.pop_mask();
         }
-        if child.clip_depth() > 0 && child.allow_as_mask() {
+        if context.allow_mask && child.clip_depth() > 0 && child.allow_as_mask() {
             // Push and render the mask.
             clip_depth_stack.push((clip_depth, child));
             clip_depth = child.clip_depth();
             context.renderer.push_mask();
+            context.allow_mask = false;
             child.render(context);
+            context.allow_mask = true;
             context.renderer.activate_mask();
         } else if child.visible() {
             // Normal child.
@@ -1179,7 +1199,9 @@ pub fn render_children<'gc>(
     // Pop any remaining masks.
     for (_, clip_child) in clip_depth_stack.into_iter().rev() {
         context.renderer.deactivate_mask();
+        context.allow_mask = false;
         clip_child.render(context);
+        context.allow_mask = true;
         context.renderer.pop_mask();
     }
 }

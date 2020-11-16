@@ -225,7 +225,7 @@ impl<'gc> Font<'gc> {
         params: EvalParameters,
         mut glyph_func: FGlyph,
     ) where
-        FGlyph: FnMut(&Transform, &Glyph, Twips),
+        FGlyph: FnMut(usize, &Transform, &Glyph, Twips, Twips),
     {
         transform.matrix.ty += params.height;
         let scale = params.height.get() as f32 / self.scale();
@@ -234,6 +234,8 @@ impl<'gc> Font<'gc> {
         transform.matrix.d = scale;
         let mut chars = text.chars().peekable();
         let has_kerning_info = self.has_kerning_info();
+        let mut pos = 0;
+        let mut x = Twips::zero();
         while let Some(c) = chars.next() {
             if let Some(glyph) = self.get_glyph_for_char(c) {
                 let mut advance = Twips::new(glyph.advance);
@@ -243,11 +245,13 @@ impl<'gc> Font<'gc> {
                 let twips_advance =
                     Twips::new((advance.get() as f32 * scale) as i32) + params.letter_spacing;
 
-                glyph_func(&transform, &glyph, twips_advance);
+                glyph_func(pos, &transform, &glyph, twips_advance, x);
 
                 // Step horizontally.
                 transform.matrix.tx += twips_advance;
+                x += twips_advance;
             }
+            pos += 1;
         }
     }
 
@@ -262,7 +266,7 @@ impl<'gc> Font<'gc> {
             text,
             Default::default(),
             params,
-            |transform, _glyph, advance| {
+            |_pos, transform, _glyph, advance, _x| {
                 let tx = transform.matrix.tx;
                 let ty = transform.matrix.ty;
 

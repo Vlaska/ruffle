@@ -24,6 +24,7 @@ mod flash;
 mod function;
 mod global_scope;
 mod int;
+mod math;
 mod namespace;
 mod number;
 mod object;
@@ -35,10 +36,16 @@ fn trace<'gc>(
     _this: Option<Object<'gc>>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error> {
-    if let Some(s) = args.get(0) {
-        let message = s.clone().coerce_to_string(activation)?;
-        activation.context.log.avm_trace(&message);
+    let mut message = String::new();
+    if !args.is_empty() {
+        message.push_str(&args[0].clone().coerce_to_string(activation)?);
+        for arg in &args[1..] {
+            message.push(' ');
+            message.push_str(&arg.clone().coerce_to_string(activation)?);
+        }
     }
+
+    activation.context.log.avm_trace(&message);
 
     Ok(Value::Undefined)
 }
@@ -396,6 +403,14 @@ pub fn load_player_globals<'gc>(
     constant(mc, "", "null", Value::Null, domain, script)?;
     constant(mc, "", "NaN", NAN.into(), domain, script)?;
     constant(mc, "", "Infinity", f64::INFINITY.into(), domain, script)?;
+
+    class(
+        activation,
+        math::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
 
     // package `flash.system`
     activation

@@ -1,4 +1,5 @@
 #![allow(
+    clippy::manual_range_contains,
     clippy::unneeded_field_pattern,
     clippy::same_item_push,
     clippy::unknown_clippy_lints
@@ -24,6 +25,7 @@ pub mod context;
 mod drawing;
 mod ecma_conversions;
 pub mod events;
+pub mod focus_tracker;
 mod font;
 mod html;
 mod library;

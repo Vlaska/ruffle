@@ -43,6 +43,14 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
                 self.play_button_clicked.bind(self)
             );
         }
+        self.right_click_menu = self.shadow.getElementById("right_click_menu");
+
+        self.addEventListener(
+            "contextmenu",
+            self.open_right_click_menu.bind(self)
+        );
+
+        self.addEventListener("click", self.hide_right_click_menu.bind(self));
 
         self.instance = null;
         self.allow_script_access = false;
@@ -150,6 +158,28 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
 
         let Ruffle = await this.Ruffle.catch((e) => {
             console.error("Serious error loading Ruffle: " + e);
+
+            // Serious duck typing. In error conditions, let's not make assumptions.
+            const message =
+                e && e.message ? String(e.message).toLowerCase() : "";
+            if (message.indexOf("MIME") >= 0) {
+                this.panicked = true;
+                this.container.innerHTML = `
+                    <div id="panic">
+                        <div id="panic-title">Something went wrong :(</div>
+                        <div id="panic-body">
+                            <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
+                            <p>This web server is either not serving ".wasm" files with the correct MIME type, or the file cannot be found.</p>
+                            <p>If you are the server administrator, please consult the Ruffle wiki for help.</p>
+                        </div>
+                        <div id="panic-footer">
+                            <ul>
+                                <li><a href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#configure-wasm-mime-type">view Ruffle wiki</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
             throw e;
         });
 
@@ -209,6 +239,35 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
                 this.play_button.style.display = "none";
             }
         }
+    }
+
+    open_right_click_menu(e) {
+        const rect = this.getBoundingClientRect();
+
+        this.right_click_menu.style.display = "block";
+        this.right_click_menu.style.left = Math.ceil(e.clientX - rect.x) + "px";
+        this.right_click_menu.style.top = Math.ceil(e.clientY - rect.y) + "px";
+        e.preventDefault();
+
+        this.right_click_menu.innerHTML = "";
+
+        // TODO: Loop through each item and create an appropriate element with appropriate callback here
+
+        const element = document.createElement("li");
+        element.className = "menu_item active";
+        const version =
+            __CHANNEL__ === "nightly"
+                ? `nightly ${__COMMIT_DATE__}`
+                : window.RufflePlayer.version;
+        element.innerText = `Ruffle ${version}`;
+        element.addEventListener("click", () => {
+            window.open("https://ruffle.rs", "_blank");
+        });
+        this.right_click_menu.appendChild(element);
+    }
+
+    hide_right_click_menu() {
+        this.right_click_menu.style.display = "none";
     }
 
     pause() {
@@ -347,6 +406,12 @@ exports.RufflePlayer = class RufflePlayer extends HTMLElement {
      * reloaded fresh.
      */
     panic(error) {
+        if (this.panicked) {
+            // Only show the first major error, not any repeats - they aren't as important
+            return;
+        }
+        this.panicked = true;
+
         // Clears out any existing content (ie play button or canvas) and replaces it with the error screen
         this.container.innerHTML = `
             <div id="panic">

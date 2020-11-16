@@ -222,6 +222,12 @@ pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     /// This can be changed with `tellTarget` (via `ActionSetTarget` and `ActionSetTarget2`).
     target_clip: Option<DisplayObject<'gc>>,
 
+    /// Amount of actions performed since the last timeout check
+    actions_since_timeout_check: u8,
+
+    /// Whether the base clip was removed when we started this frame.
+    base_clip_unloaded: bool,
+
     pub context: UpdateContext<'a, 'gc, 'gc_context>,
 
     /// An identifier to refer to this activation by, when debugging.
@@ -257,9 +263,11 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             constant_pool,
             base_clip,
             target_clip: Some(base_clip),
+            base_clip_unloaded: base_clip.removed(),
             this,
             arguments,
             local_registers: None,
+            actions_since_timeout_check: 0,
         }
     }
 
@@ -279,9 +287,11 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             constant_pool: self.constant_pool,
             base_clip: self.base_clip,
             target_clip: self.target_clip,
+            base_clip_unloaded: self.base_clip_unloaded,
             this: self.this,
             arguments: self.arguments,
             local_registers: self.local_registers,
+            actions_since_timeout_check: 0,
         }
     }
 
@@ -312,9 +322,11 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             constant_pool: empty_constant_pool,
             base_clip,
             target_clip: Some(base_clip),
+            base_clip_unloaded: base_clip.removed(),
             this: globals,
             arguments: None,
             local_registers: None,
+            actions_since_timeout_check: 0,
         }
     }
 
@@ -429,8 +441,12 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         data: &SwfSlice,
         reader: &mut Reader<'_>,
     ) -> Result<FrameControl<'gc>, Error<'gc>> {
-        if self.context.update_start.elapsed() >= self.context.max_execution_duration {
-            return Err(Error::ExecutionTimeout);
+        self.actions_since_timeout_check += 1;
+        if self.actions_since_timeout_check >= 200 {
+            self.actions_since_timeout_check = 0;
+            if self.context.update_start.elapsed() >= self.context.max_execution_duration {
+                return Err(Error::ExecutionTimeout);
+            }
         }
 
         if reader.pos() >= (data.end - data.start) {
@@ -678,7 +694,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             avm_warn!(self, "CloneSprite: Source is not a movie clip");
         }
 
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_bit_and(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -796,24 +812,34 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         self.context.avm1.push(result);
 
+        // After any function call, execution of this frame stops if the base clip doesn't exist.
+        // For example, a _root.gotoAndStop moves the timeline to a frame where the clip was removed.
         self.continue_if_base_clip_exists()
     }
 
     fn action_call_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let method_name = self.context.avm1.pop();
         let object_val = self.context.avm1.pop();
-        let object = value_object::ValueObject::boxed(self, object_val);
         let num_args = self.context.avm1.pop().coerce_to_f64(self)? as i64; // TODO(Herschel): max arg count?
         let mut args = Vec::new();
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
         }
 
+        // Can not call method on undefined/null.
+        if matches!(object_val, Value::Undefined | Value::Null) {
+            self.context.avm1.push(Value::Undefined);
+            return Ok(FrameControl::Continue);
+        }
+
+        let object = value_object::ValueObject::boxed(self, object_val);
+
         match method_name {
             Value::Undefined | Value::Null => {
                 let this = self.target_clip_or_root().object().coerce_to_object(self);
                 let result = object.call("[Anonymous]", self, this, None, &args)?;
                 self.context.avm1.push(result);
+                self.continue_if_base_clip_exists()
             }
             Value::String(name) => {
                 if name.is_empty() {
@@ -823,6 +849,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     let result = object.call_method(&name, &args, self)?;
                     self.context.avm1.push(result);
                 }
+                self.continue_if_base_clip_exists()
             }
             _ => {
                 self.context.avm1.push(Value::Undefined);
@@ -831,10 +858,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     "Invalid method name, expected string but found {:?}",
                     method_name
                 );
+                Ok(FrameControl::Continue)
             }
         }
-
-        self.continue_if_base_clip_exists()
     }
 
     fn action_cast_op(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -902,7 +928,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             Some(self.context.avm1.prototypes.function),
             prototype,
         );
-        if name == "" {
+        if name.is_empty() {
             self.context.avm1.push(func_obj);
         } else {
             self.define(name, func_obj);
@@ -939,7 +965,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             Some(self.context.avm1.prototypes.function),
             prototype,
         );
-        if action_func.name == "" {
+        if action_func.name.is_empty() {
             self.context.avm1.push(func_obj);
         } else {
             self.define(action_func.name, func_obj);
@@ -1182,7 +1208,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     let fetch = self.context.navigator.fetch(&url, RequestOptions::get());
                     let level = self.resolve_level(level_id);
 
-                    if url == "" {
+                    if url.is_empty() {
                         //Blank URL on movie loads = unload!
                         if let Some(mut mc) = level.as_movie_clip() {
                             mc.replace_with_movie(self.context.gc_context, None)
@@ -1205,7 +1231,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     e
                 ),
             }
-            return self.continue_if_base_clip_exists();
+            return Ok(FrameControl::Continue);
         }
 
         if let Some(fscommand) = fscommand::parse(url) {
@@ -1277,7 +1303,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     NavigationMethod::from_send_vars_method(swf_method),
                 );
 
-                if url == "" {
+                if url.is_empty() {
                     //Blank URL on movie loads = unload!
                     if let Some(mut mc) = clip_target.as_movie_clip() {
                         mc.replace_with_movie(self.context.gc_context, None)
@@ -1294,7 +1320,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     self.context.navigator.spawn_future(process);
                 }
             }
-            return self.continue_if_base_clip_exists();
+            return Ok(FrameControl::Continue);
         } else if window_target.starts_with("_level") && url.len() > 6 {
             // target of `_level#` indicates a `loadMovieNum` call.
             match window_target[6..].parse::<u32>() {
@@ -1346,7 +1372,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_error!(self, "GotoFrame failed: Invalid target");
         }
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_goto_frame_2(
@@ -1372,7 +1398,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "GotoFrame2: Invalid target");
         }
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_goto_label(&mut self, label: &str) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1389,7 +1415,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "GoToLabel: Invalid target");
         }
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_if(
@@ -1617,7 +1643,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "NextFrame: Invalid target");
         }
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_new_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1629,12 +1655,17 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             args.push(self.context.avm1.pop());
         }
 
+        // Can not call method on undefined/null.
+        if matches!(object_val, Value::Undefined | Value::Null) {
+            self.context.avm1.push(Value::Undefined);
+            return Ok(FrameControl::Continue);
+        }
+
         let object = value_object::ValueObject::boxed(self, object_val);
         let constructor = object.get(&method_name.coerce_to_string(self)?, self)?;
         if let Value::Object(constructor) = constructor {
             //TODO: What happens if you `ActionNewMethod` without a method name?
             let this = constructor.construct(self, &args)?;
-
             self.context.avm1.push(this);
         } else {
             avm_warn!(
@@ -1700,7 +1731,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "PrevFrame: Invalid target");
         }
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_pop(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1774,7 +1805,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         } else {
             avm_warn!(self, "RemoveSprite: Source is not a movie clip");
         }
-        self.continue_if_base_clip_exists()
+        Ok(FrameControl::Continue)
     }
 
     fn action_return(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
@@ -1841,7 +1872,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         if target.is_empty() {
             new_target_clip = Some(base_clip);
         } else if let Some(clip) = self
-            .resolve_target_path(root, start, target)?
+            .resolve_target_path(root, start, target, false)?
             .and_then(|o| o.as_display_object())
         {
             new_target_clip = Some(clip);
@@ -2398,7 +2429,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let root = start.root();
         let start = start.object().coerce_to_object(self);
         Ok(self
-            .resolve_target_path(root, start, &path)?
+            .resolve_target_path(root, start, &path, false)?
             .and_then(|o| o.as_display_object()))
     }
 
@@ -2416,6 +2447,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         root: DisplayObject<'gc>,
         start: Object<'gc>,
         path: &str,
+        mut first_element: bool,
     ) -> Result<Option<Object<'gc>>, Error<'gc>> {
         // Empty path resolves immediately to start clip.
         if path.is_empty() {
@@ -2482,18 +2514,27 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 // Guaranteed to be valid UTF-8.
                 let name = unsafe { std::str::from_utf8_unchecked(ident) };
 
-                // Get the value from the object.
-                // Resolves display object instances first, then local variables.
-                // This is the opposite of general GetMember property access!
-                if let Some(child) = object
-                    .as_display_object()
-                    .and_then(|o| o.get_child_by_name(name, case_sensitive))
-                {
-                    child.object()
+                if first_element && name == "this" {
+                    self.this_cell().into()
+                } else if first_element && name == "_root" {
+                    self.root_object()
                 } else {
-                    object.get(&name, self).unwrap()
+                    // Get the value from the object.
+                    // Resolves display object instances first, then local variables.
+                    // This is the opposite of general GetMember property access!
+                    if let Some(child) = object
+                        .as_display_object()
+                        .and_then(|o| o.get_child_by_name(name, case_sensitive))
+                    {
+                        child.object()
+                    } else {
+                        object.get(&name, self).unwrap()
+                    }
                 }
             };
+
+            // `this`/`_root` can only be the first element in the path.
+            first_element = false;
 
             // Resolve the value to an object while traversing the path.
             object = if let Value::Object(o) = val {
@@ -2539,7 +2580,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             let mut current_scope = Some(self.scope_cell());
             while let Some(scope) = current_scope {
                 if let Some(object) =
-                    self.resolve_target_path(start.root(), *scope.read().locals(), path)?
+                    self.resolve_target_path(start.root(), *scope.read().locals(), path, true)?
                 {
                     return Ok(Some((object, var_name)));
                 }
@@ -2607,7 +2648,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             let mut current_scope = Some(self.scope_cell());
             while let Some(scope) = current_scope {
                 if let Some(object) =
-                    self.resolve_target_path(start.root(), *scope.read().locals(), path)?
+                    self.resolve_target_path(start.root(), *scope.read().locals(), path, true)?
                 {
                     if object.has_property(self, var_name) {
                         return Ok(CallableValue::Callable(object, object.get(var_name, self)?));
@@ -2625,7 +2666,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             let mut current_scope = Some(self.scope_cell());
             while let Some(scope) = current_scope {
                 if let Some(object) =
-                    self.resolve_target_path(start.root(), *scope.read().locals(), path)?
+                    self.resolve_target_path(start.root(), *scope.read().locals(), path, false)?
                 {
                     return Ok(CallableValue::UnCallable(object.into()));
                 }
@@ -2684,7 +2725,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             let mut current_scope = Some(self.scope_cell());
             while let Some(scope) = current_scope {
                 if let Some(object) =
-                    self.resolve_target_path(start.root(), *scope.read().locals(), path)?
+                    self.resolve_target_path(start.root(), *scope.read().locals(), path, true)?
                 {
                     object.set(var_name, value, self)?;
                     return Ok(());
@@ -2882,7 +2923,11 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     /// If the clip executing a script is removed during exectuion, return from this activation.
     /// Should be called after any action that could potentially destroy a clip (gotos, etc.)
     fn continue_if_base_clip_exists(&self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        if self.base_clip.removed() {
+        // The exception is `unload` clip event handlers, which currently are called when the clip
+        // has already been removed. If this activation started with the base clip already removed,
+        // this is an unload handler, so allow the code to run regardless.
+        // (This may no longer be necessary once #1535 is fixed.)
+        if !self.base_clip_unloaded && self.base_clip.removed() {
             Ok(FrameControl::Return(ReturnType::Explicit(Value::Undefined)))
         } else {
             Ok(FrameControl::Continue)
