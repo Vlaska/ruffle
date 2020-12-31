@@ -3,7 +3,6 @@ use crate::utils::create_buffer_with_data;
 use crate::TextureTransforms;
 use bytemuck::{Pod, Zeroable};
 use ruffle_core::backend::audio::swf::CharacterId;
-use ruffle_core::color_transform::ColorTransform;
 use wgpu::BufferSize;
 
 #[repr(C)]
@@ -24,11 +23,7 @@ unsafe impl Zeroable for GradientUniforms {}
 #[derive(Debug)]
 pub struct Mesh {
     pub draws: Vec<Draw>,
-    pub transforms: wgpu::Buffer,
-    pub colors_buffer: wgpu::Buffer,
-    pub colors_last: ColorTransform,
     pub shape_id: CharacterId,
-    pub bind_group: wgpu::BindGroup,
 }
 
 #[derive(Debug)]
@@ -50,7 +45,6 @@ pub enum DrawType {
     Bitmap {
         texture_transforms: wgpu::Buffer,
         texture_view: wgpu::TextureView,
-        id: CharacterId,
         is_smoothed: bool,
         is_repeating: bool,
         bind_group: wgpu::BindGroup,
@@ -70,7 +64,6 @@ pub enum IncompleteDrawType {
         is_smoothed: bool,
         is_repeating: bool,
         texture_view: wgpu::TextureView,
-        id: CharacterId,
     },
 }
 
@@ -172,7 +165,6 @@ impl IncompleteDrawType {
                 is_smoothed,
                 is_repeating,
                 texture_view,
-                id,
             } => {
                 let tex_transforms_ubo = create_buffer_with_data(
                     device,
@@ -212,7 +204,6 @@ impl IncompleteDrawType {
                     draw_type: DrawType::Bitmap {
                         texture_transforms: tex_transforms_ubo,
                         texture_view,
-                        id,
                         is_smoothed,
                         is_repeating,
                         bind_group,

@@ -1,7 +1,7 @@
 use crate::avm2::Domain as Avm2Domain;
 use crate::backend::audio::SoundHandle;
 use crate::character::Character;
-use crate::display_object::TDisplayObject;
+use crate::display_object::{Bitmap, TDisplayObject};
 use crate::font::{Font, FontDescriptor};
 use crate::prelude::*;
 use crate::property_map::{Entry, PropertyMap};
@@ -23,7 +23,6 @@ pub struct MovieLibrary<'gc> {
     characters: HashMap<CharacterId, Character<'gc>>,
     export_characters: PropertyMap<Character<'gc>>,
     jpeg_tables: Option<Vec<u8>>,
-    device_font: Option<Font<'gc>>,
     fonts: HashMap<FontDescriptor, Font<'gc>>,
     avm_type: AvmType,
     avm2_domain: Option<Avm2Domain<'gc>>,
@@ -35,7 +34,6 @@ impl<'gc> MovieLibrary<'gc> {
             characters: HashMap::new(),
             export_characters: PropertyMap::new(),
             jpeg_tables: None,
-            device_font: None,
             fonts: HashMap::new(),
             avm_type,
             avm2_domain: None,
@@ -145,6 +143,14 @@ impl<'gc> MovieLibrary<'gc> {
         }
     }
 
+    pub fn get_bitmap(&self, id: CharacterId) -> Option<Bitmap<'gc>> {
+        if let Some(&Character::Bitmap(bitmap)) = self.characters.get(&id) {
+            Some(bitmap)
+        } else {
+            None
+        }
+    }
+
     pub fn get_font(&self, id: CharacterId) -> Option<Font<'gc>> {
         if let Some(&Character::Font(font)) = self.characters.get(&id) {
             Some(font)
@@ -193,16 +199,6 @@ impl<'gc> MovieLibrary<'gc> {
         self.jpeg_tables.as_ref().map(|data| &data[..])
     }
 
-    /// Returns the device font for use when a font is unavailable.
-    pub fn device_font(&self) -> Option<Font<'gc>> {
-        self.device_font
-    }
-
-    /// Sets the device font.
-    pub fn set_device_font(&mut self, font: Option<Font<'gc>>) {
-        self.device_font = font;
-    }
-
     /// Check if the current movie's VM type is compatible with running code on
     /// a particular VM. If it is not, then this yields an error.
     pub fn check_avm_type(&mut self, new_type: AvmType) -> Result<(), Error> {
@@ -243,6 +239,9 @@ impl<'gc> MovieLibrary<'gc> {
 pub struct Library<'gc> {
     /// All the movie libraries.
     movie_libraries: PtrWeakKeyHashMap<Weak<SwfMovie>, MovieLibrary<'gc>>,
+
+    /// The embedded device font.
+    device_font: Option<Font<'gc>>,
 }
 
 unsafe impl<'gc> gc_arena::Collect for Library<'gc> {
@@ -251,6 +250,7 @@ unsafe impl<'gc> gc_arena::Collect for Library<'gc> {
         for (_, val) in self.movie_libraries.iter() {
             val.trace(cc);
         }
+        self.device_font.trace(cc);
     }
 }
 
@@ -290,12 +290,23 @@ impl<'gc> Library<'gc> {
 
         self.movie_libraries.get_mut(&movie).unwrap()
     }
+
+    /// Returns the device font for use when a font is unavailable.
+    pub fn device_font(&self) -> Option<Font<'gc>> {
+        self.device_font
+    }
+
+    /// Sets the device font.
+    pub fn set_device_font(&mut self, font: Option<Font<'gc>>) {
+        self.device_font = font;
+    }
 }
 
 impl<'gc> Default for Library<'gc> {
     fn default() -> Self {
         Self {
             movie_libraries: PtrWeakKeyHashMap::new(),
+            device_font: None,
         }
     }
 }

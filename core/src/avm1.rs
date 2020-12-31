@@ -31,7 +31,7 @@ mod value;
 mod tests;
 
 use crate::avm1::activation::{Activation, ActivationIdentifier};
-use crate::avm1::error::Error;
+pub use crate::avm1::error::Error;
 use crate::avm1::globals::as_broadcaster;
 use crate::avm1::globals::as_broadcaster::BroadcasterFunctions;
 pub use globals::SystemPrototypes;
@@ -208,6 +208,7 @@ impl<'gc> Avm1<'gc> {
             active_clip,
             clip_obj,
             None,
+            None,
         );
         if let Err(e) = child_activation.run_actions(code) {
             root_error_handler(&mut child_activation, e);
@@ -247,6 +248,7 @@ impl<'gc> Avm1<'gc> {
             constant_pool,
             active_clip,
             clip_obj,
+            None,
             None,
         );
         function(&mut activation)
@@ -298,6 +300,7 @@ impl<'gc> Avm1<'gc> {
             constant_pool,
             active_clip,
             clip_obj,
+            None,
             None,
         );
         if let Err(e) = child_activation.run_actions(code) {

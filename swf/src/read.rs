@@ -1,6 +1,7 @@
 #![allow(
     clippy::float_cmp,
     clippy::inconsistent_digit_grouping,
+    clippy::unknown_clippy_lints,
     clippy::unreadable_literal
 )]
 
@@ -20,6 +21,7 @@ use std::io::{self, Read};
 ///
 /// # Example
 /// ```
+/// # std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
 /// let data = std::fs::read("tests/swfs/DefineSprite.swf").unwrap();
 /// let swf = swf::read_swf(&data[..]).unwrap();
 /// println!("Number of frames: {}", swf.header.num_frames);
@@ -73,6 +75,7 @@ pub fn read_swf<R: Read>(input: R) -> Result<Swf> {
 ///
 /// # Example
 /// ```
+/// # std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
 /// let data = std::fs::read("tests/swfs/DefineSprite.swf").unwrap();
 /// let swf_stream = swf::read_swf_header(&data[..]).unwrap();
 /// println!("FPS: {}", swf_stream.header.frame_rate);
@@ -128,6 +131,7 @@ pub fn read_swf_header<'a, R: Read + 'a>(mut input: R) -> Result<SwfStream<'a>> 
 }
 
 #[cfg(feature = "flate2")]
+#[allow(clippy::unnecessary_wraps)]
 fn make_zlib_reader<'a, R: Read + 'a>(input: R) -> Result<Box<dyn Read + 'a>> {
     use flate2::read::ZlibDecoder;
     Ok(Box::new(ZlibDecoder::new(input)))
@@ -152,11 +156,9 @@ fn make_lzma_reader<'a, R: Read + 'a>(
     mut input: R,
     uncompressed_length: u32,
 ) -> Result<Box<dyn Read + 'a>> {
-    use byteorder::WriteBytesExt;
-    use std::io::{Cursor, Write};
-    use xz2::{
-        read::XzDecoder,
-        stream::{Action, Stream},
+    use lzma_rs::{
+        decompress::{Options, UnpackedSize},
+        lzma_decompress_with_options,
     };
     // Flash uses a mangled LZMA header, so we have to massage it into the normal format.
     // https://helpx.adobe.com/flash-player/kb/exception-thrown-you-decompress-lzma-compressed.html
@@ -170,27 +172,24 @@ fn make_lzma_reader<'a, R: Read + 'a>(
     // LZMA standard header
     // Bytes 0..5: LZMA properties
     // Bytes 5..13: Uncompressed length
+    //
+    // To deal with the mangled header, use lzma_rs options to anually provide uncompressed length.
 
-    // Read compressed length
+    // Read compressed length (ignored)
     let _ = input.read_u32::<LittleEndian>()?;
 
-    // Read LZMA propreties to decoder
-    let mut lzma_properties = [0u8; 5];
-    input.read_exact(&mut lzma_properties)?;
+    // TODO: Switch to lzma-rs streaming API when stable.
+    let mut output = Vec::with_capacity(uncompressed_length as usize);
+    lzma_decompress_with_options(
+        &mut io::BufReader::new(input),
+        &mut output,
+        &Options {
+            unpacked_size: UnpackedSize::UseProvided(Some(uncompressed_length.into())),
+        },
+    )
+    .map_err(|_| Error::invalid_data("Unable to decompress LZMA SWF."))?;
 
-    // Rearrange above into LZMA format
-    let mut lzma_header = Cursor::new(Vec::with_capacity(13));
-    lzma_header.write_all(&lzma_properties)?;
-    lzma_header.write_u64::<LittleEndian>(uncompressed_length.into())?;
-
-    // Create LZMA decoder stream and write header
-    let mut lzma_stream = Stream::new_lzma_decoder(u64::max_value()).unwrap();
-    lzma_stream
-        .process(&lzma_header.into_inner(), &mut [0u8; 1], Action::Run)
-        .unwrap();
-
-    // Decoder is ready
-    Ok(Box::new(XzDecoder::new_stream(input, lzma_stream)))
+    Ok(Box::new(io::Cursor::new(output)))
 }
 
 #[cfg(not(feature = "lzma"))]
@@ -365,6 +364,7 @@ impl<R: Read> Reader<R> {
     /// Reads the next SWF tag from the stream.
     /// # Example
     /// ```
+    /// # std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
     /// let data = std::fs::read("tests/swfs/DefineSprite.swf").unwrap();
     /// let mut swf_stream = swf::read_swf_header(&data[..]).unwrap();
     /// while let Ok(tag) = swf_stream.reader.read_tag() {
@@ -2356,7 +2356,9 @@ impl<R: Read> Reader<R> {
                 self.read_u16()?;
             } else {
                 self.read_ubits(5)?;
-                if self.read_bit()? && self.version >= 7 {
+                if self.read_bit()? {
+                    // Construct was only added in SWF7, but it's not version-gated;
+                    // Construct events will still fire in SWF6 in a v7+ player. (#1424)
                     event_list.insert(ClipEventFlag::Construct);
                 }
                 if self.read_bit()? {

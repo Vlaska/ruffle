@@ -359,8 +359,16 @@ pub fn xmlnode_first_child<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
         if let Some(mut children) = node.children() {
-            return Ok(children
-                .next()
+            let mut next = children.next();
+            while let Some(my_next) = next {
+                if is_as2_compatible(my_next) {
+                    break;
+                }
+
+                next = my_next.next_sibling().unwrap_or(None);
+            }
+
+            return Ok(next
                 .map(|mut child| {
                     child
                         .script_object(
@@ -383,8 +391,15 @@ pub fn xmlnode_last_child<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
         if let Some(mut children) = node.children() {
-            return Ok(children
-                .next_back()
+            let mut prev = children.next_back();
+            while let Some(my_prev) = prev {
+                if is_as2_compatible(my_prev) {
+                    break;
+                }
+
+                prev = my_prev.prev_sibling().unwrap_or(None);
+            }
+            return Ok(prev
                 .map(|mut child| {
                     child
                         .script_object(
@@ -780,9 +795,16 @@ pub fn xml_constructor<'gc>(
             let mut xmlnode = xmldoc.as_node();
             xmlnode.introduce_script_object(activation.context.gc_context, this);
             this_node.swap(activation.context.gc_context, xmlnode);
+            let ignore_whitespace = this
+                .get("ignoreWhite", activation)?
+                .as_bool(activation.current_swf_version());
 
-            if let Err(e) = this_node.replace_with_str(activation.context.gc_context, string, true)
-            {
+            if let Err(e) = this_node.replace_with_str(
+                activation.context.gc_context,
+                string,
+                true,
+                ignore_whitespace,
+            ) {
                 avm_warn!(
                     activation,
                     "Couldn't replace_with_str inside of XML constructor: {}",
@@ -884,7 +906,16 @@ pub fn xml_parse_xml<'gc>(
             }
         }
 
-        let result = node.replace_with_str(activation.context.gc_context, &xmlstring, true);
+        let ignore_whitespace = this
+            .get("ignoreWhite", activation)?
+            .as_bool(activation.current_swf_version());
+
+        let result = node.replace_with_str(
+            activation.context.gc_context,
+            &xmlstring,
+            true,
+            ignore_whitespace,
+        );
         if let Err(e) = result {
             avm_warn!(activation, "XML parsing error: {}", e);
         }
@@ -913,7 +944,7 @@ pub fn xml_load<'gc>(
             .context
             .navigator
             .fetch(&url, RequestOptions::get());
-        let target_clip = activation.target_clip_or_root();
+        let target_clip = activation.target_clip_or_root()?;
         let process = activation.context.load_manager.load_xml_into_node(
             activation.context.player.clone().unwrap(),
             node,
@@ -1062,6 +1093,7 @@ pub fn create_xml_proto<'gc>(
         None,
         ReadOnly.into(),
     );
+    xml_proto.define_value(gc_context, "ignoreWhite", false.into(), EnumSet::empty());
     xml_proto.add_property(
         gc_context,
         "xmlDecl",

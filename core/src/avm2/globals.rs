@@ -31,6 +31,8 @@ mod object;
 mod string;
 mod r#uint;
 
+const NS_RUFFLE_INTERNAL: &str = "https://ruffle.rs/AS3/impl/";
+
 fn trace<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _this: Option<Object<'gc>>,
@@ -48,6 +50,30 @@ fn trace<'gc>(
     activation.context.log.avm_trace(&message);
 
     Ok(Value::Undefined)
+}
+
+fn is_finite<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Option<Object<'gc>>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error> {
+    if let Some(val) = args.get(0) {
+        Ok(val.coerce_to_number(activation)?.is_finite().into())
+    } else {
+        Ok(false.into())
+    }
+}
+
+fn is_nan<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Option<Object<'gc>>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error> {
+    if let Some(val) = args.get(0) {
+        Ok(val.coerce_to_number(activation)?.is_nan().into())
+    } else {
+        Ok(true.into())
+    }
 }
 
 /// This structure represents all system builtins' prototypes.
@@ -69,6 +95,7 @@ pub struct SystemPrototypes<'gc> {
     pub framelabel: Object<'gc>,
     pub scene: Object<'gc>,
     pub application_domain: Object<'gc>,
+    pub event: Object<'gc>,
 }
 
 impl<'gc> SystemPrototypes<'gc> {
@@ -101,6 +128,7 @@ impl<'gc> SystemPrototypes<'gc> {
             framelabel: empty,
             scene: empty,
             application_domain: empty,
+            event: empty,
         }
     }
 }
@@ -399,6 +427,8 @@ pub fn load_player_globals<'gc>(
     activation.context.avm2.system_prototypes = Some(sp);
 
     function(mc, "", "trace", trace, fn_proto, domain, script)?;
+    function(mc, "", "isFinite", is_finite, fn_proto, domain, script)?;
+    function(mc, "", "isNaN", is_nan, fn_proto, domain, script)?;
     constant(mc, "", "undefined", Value::Undefined, domain, script)?;
     constant(mc, "", "null", Value::Null, domain, script)?;
     constant(mc, "", "NaN", NAN.into(), domain, script)?;
@@ -428,6 +458,19 @@ pub fn load_player_globals<'gc>(
     )?;
 
     // package `flash.events`
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .event = class(
+        activation,
+        flash::events::event::create_class(mc),
+        flash::events::event::event_deriver,
+        domain,
+        script,
+    )?;
     class(
         activation,
         flash::events::ieventdispatcher::create_interface(mc),

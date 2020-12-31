@@ -5,7 +5,10 @@ use lyon::tessellation::{
     FillAttributes, FillTessellator, StrokeAttributes, StrokeTessellator, StrokeVertexConstructor,
 };
 use lyon::tessellation::{FillOptions, StrokeOptions};
-use ruffle_core::backend::render::swf::{self, FillStyle, GradientInterpolation, Twips};
+use ruffle_core::backend::render::{
+    swf::{self, FillStyle, GradientInterpolation, Twips},
+    BitmapHandle,
+};
 use ruffle_core::shape_utils::{DistilledShape, DrawCommand, DrawPath};
 
 pub struct ShapeTessellator {
@@ -21,9 +24,9 @@ impl ShapeTessellator {
         }
     }
 
-    pub fn tessellate_shape<F>(&mut self, shape: DistilledShape, get_bitmap_dimensions: F) -> Mesh
+    pub fn tessellate_shape<F>(&mut self, shape: DistilledShape, get_bitmap: F) -> Mesh
     where
-        F: Fn(swf::CharacterId) -> Option<(u32, u32)>,
+        F: Fn(swf::CharacterId) -> Option<(u32, u32, BitmapHandle)>,
     {
         let mut mesh = Vec::new();
 
@@ -219,17 +222,20 @@ impl ShapeTessellator {
                             continue;
                         }
 
-                        let (bitmap_width, bitmap_height) =
-                            (get_bitmap_dimensions)(*id).unwrap_or((1, 1));
+                        if let Some((bitmap_width, bitmap_height, bitmap)) = get_bitmap(*id) {
+                            let bitmap = Bitmap {
+                                matrix: swf_bitmap_to_gl_matrix(
+                                    *matrix,
+                                    bitmap_width,
+                                    bitmap_height,
+                                ),
+                                bitmap,
+                                is_smoothed: *is_smoothed,
+                                is_repeating: *is_repeating,
+                            };
 
-                        let bitmap = Bitmap {
-                            matrix: swf_bitmap_to_gl_matrix(*matrix, bitmap_width, bitmap_height),
-                            id: *id,
-                            is_smoothed: *is_smoothed,
-                            is_repeating: *is_repeating,
-                        };
-
-                        flush_draw(DrawType::Bitmap(bitmap), &mut mesh, &mut lyon_mesh);
+                            flush_draw(DrawType::Bitmap(bitmap), &mut mesh, &mut lyon_mesh);
+                        }
                     }
                 },
                 DrawPath::Stroke {
@@ -254,11 +260,6 @@ impl ShapeTessellator {
 
                     let mut options = StrokeOptions::default()
                         .with_line_width(width)
-                        .with_line_join(match style.join_style {
-                            swf::LineJoinStyle::Round => tessellation::LineJoin::Round,
-                            swf::LineJoinStyle::Bevel => tessellation::LineJoin::Bevel,
-                            swf::LineJoinStyle::Miter(_) => tessellation::LineJoin::MiterClip,
-                        })
                         .with_start_cap(match style.start_cap {
                             swf::LineCapStyle::None => tessellation::LineCap::Butt,
                             swf::LineCapStyle::Round => tessellation::LineCap::Round,
@@ -270,9 +271,20 @@ impl ShapeTessellator {
                             swf::LineCapStyle::Square => tessellation::LineCap::Square,
                         });
 
-                    if let swf::LineJoinStyle::Miter(limit) = style.join_style {
-                        options = options.with_miter_limit(limit);
-                    }
+                    let line_join = match style.join_style {
+                        swf::LineJoinStyle::Round => tessellation::LineJoin::Round,
+                        swf::LineJoinStyle::Bevel => tessellation::LineJoin::Bevel,
+                        swf::LineJoinStyle::Miter(limit) => {
+                            // Avoid lyon assert with small miter limits.
+                            if limit >= StrokeOptions::MINIMUM_MITER_LIMIT {
+                                options = options.with_miter_limit(limit);
+                                tessellation::LineJoin::MiterClip
+                            } else {
+                                tessellation::LineJoin::Bevel
+                            }
+                        }
+                    };
+                    options = options.with_line_join(line_join);
 
                     if let Err(e) = self.stroke_tess.tessellate_path(
                         &ruffle_path_to_lyon_path(commands, is_closed),
@@ -335,7 +347,7 @@ pub struct Vertex {
 #[derive(Clone, Debug)]
 pub struct Bitmap {
     pub matrix: [[f32; 3]; 3],
-    pub id: swf::CharacterId,
+    pub bitmap: BitmapHandle,
     pub is_smoothed: bool,
     pub is_repeating: bool,
 }

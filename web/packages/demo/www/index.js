@@ -1,4 +1,4 @@
-const { SourceAPI, PublicAPI } = require("ruffle-selfhosted");
+const { SourceAPI, PublicAPI } = require("ruffle-core");
 
 window.RufflePlayer = PublicAPI.negotiate(
     window.RufflePlayer,
@@ -9,6 +9,7 @@ window.RufflePlayer = PublicAPI.negotiate(
 let ruffle;
 let player;
 let jsonData;
+let initialFile;
 
 let container = document.getElementById("main");
 let author_container = document.getElementById("author-container");
@@ -21,9 +22,10 @@ let gamesOptGroup = document.getElementById("games-optgroup");
 
 window.addEventListener("DOMContentLoaded", () => {
     ruffle = window.RufflePlayer.newest();
-    player = ruffle.create_player();
+    player = ruffle.createPlayer();
     player.id = "player";
     container.appendChild(player);
+    initialFile = new URLSearchParams(window.location.search).get("file");
     fetch("swfs.json").then((response) => {
         if (response.ok) {
             response.json().then((data) => {
@@ -40,11 +42,22 @@ window.addEventListener("DOMContentLoaded", () => {
                     }
                 });
                 sampleFileInputContainer.style.display = "inline-block";
-                // Load a random file.
-                let rn = Math.floor(
-                    Math.random() * Math.floor(jsonData.swfs.length)
-                );
-                sampleFileInput.selectedIndex = rn + 1;
+
+                if (initialFile) {
+                    let opts = Array.from(sampleFileInput.options).map(
+                        (item) => item.value
+                    );
+                    sampleFileInput.selectedIndex = Math.max(
+                        opts.findIndex((item) => item.endsWith(initialFile)),
+                        0
+                    );
+                } else {
+                    // Load a random file.
+                    let rn = Math.floor(
+                        Math.random() * Math.floor(jsonData.swfs.length)
+                    );
+                    sampleFileInput.selectedIndex = rn + 1;
+                }
                 sampleFileSelected();
             });
         } else {
@@ -84,7 +97,7 @@ function localFileSelected() {
     if (file) {
         let fileReader = new FileReader();
         fileReader.onload = () => {
-            player.play_swf_data(fileReader.result);
+            player.load({ data: fileReader.result });
         };
         fileReader.readAsArrayBuffer(file);
     }
@@ -92,7 +105,7 @@ function localFileSelected() {
 
 function loadRemoteFile(url) {
     fetch(url).then((response) => {
-        response.arrayBuffer().then((data) => player.play_swf_data(data));
+        response.arrayBuffer().then((data) => player.load({ data }));
     });
 }
 

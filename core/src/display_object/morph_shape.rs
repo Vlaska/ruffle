@@ -1,9 +1,11 @@
-use crate::backend::render::{RenderBackend, ShapeHandle};
+use crate::backend::render::ShapeHandle;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::prelude::*;
+use crate::tag_utils::SwfMovie;
 use crate::types::{Degrees, Percent};
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
+use std::sync::Arc;
 use swf::Twips;
 
 #[derive(Clone, Debug, Collect, Copy)]
@@ -120,27 +122,35 @@ pub struct MorphShapeStatic {
     start: swf::MorphShape,
     end: swf::MorphShape,
     frames: fnv::FnvHashMap<u16, Frame>,
+    movie: Arc<SwfMovie>,
 }
 
 impl MorphShapeStatic {
-    pub fn from_swf_tag(renderer: &mut dyn RenderBackend, swf_tag: &swf::DefineMorphShape) -> Self {
+    pub fn from_swf_tag(
+        context: &mut UpdateContext<'_, '_, '_>,
+        swf_tag: &swf::DefineMorphShape,
+        movie: Arc<SwfMovie>,
+    ) -> Self {
         let mut morph_shape = Self {
             id: swf_tag.id,
             start: swf_tag.start.clone(),
             end: swf_tag.end.clone(),
             frames: fnv::FnvHashMap::default(),
+            movie,
         };
         // Pre-register the start and end states.
-        morph_shape.register_ratio(renderer, 0);
-        morph_shape.register_ratio(renderer, 65535);
+        morph_shape.register_ratio(context, 0);
+        morph_shape.register_ratio(context, 65535);
         morph_shape
     }
 
-    pub fn register_ratio(&mut self, renderer: &mut dyn RenderBackend, ratio: u16) {
+    pub fn register_ratio(&mut self, context: &mut UpdateContext<'_, '_, '_>, ratio: u16) {
         if self.frames.contains_key(&ratio) {
             // Already registered.
             return;
         }
+
+        let library = context.library.library_for_movie(Arc::clone(&self.movie));
 
         // Interpolate MorphShapes into a Shape.
         use swf::{FillStyle, LineStyle, ShapeRecord, ShapeStyles};
@@ -192,19 +202,19 @@ impl MorphShapeStatic {
             match (s, e) {
                 (ShapeRecord::StyleChange(start_change), ShapeRecord::StyleChange(end_change)) => {
                     let mut style_change = start_change.clone();
-                    if let Some((s_x, s_y)) = start_change.move_to {
-                        if let Some((e_x, e_y)) = end_change.move_to {
+                    if start_change.move_to != end_change.move_to {
+                        if let Some((s_x, s_y)) = start_change.move_to {
                             start_x = s_x;
                             start_y = s_y;
+                        }
+                        if let Some((e_x, e_y)) = end_change.move_to {
                             end_x = e_x;
                             end_y = e_y;
-                            style_change.move_to = Some((
-                                lerp_twips(start_x, end_x, a, b),
-                                lerp_twips(start_y, end_y, a, b),
-                            ));
-                        } else {
-                            panic!("Expected move_to for morph shape")
                         }
+                        style_change.move_to = Some((
+                            lerp_twips(start_x, end_x, a, b),
+                            lerp_twips(start_y, end_y, a, b),
+                        ));
                     }
                     shape.push(ShapeRecord::StyleChange(style_change));
                     start = start_iter.next();
@@ -268,7 +278,7 @@ impl MorphShapeStatic {
         };
 
         let frame = Frame {
-            shape_handle: renderer.register_shape((&shape).into()),
+            shape_handle: context.renderer.register_shape((&shape).into(), library),
             shape,
             bounds: bounds.into(),
         };

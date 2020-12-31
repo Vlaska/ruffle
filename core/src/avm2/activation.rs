@@ -178,15 +178,18 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         this: Option<Object<'gc>>,
         arguments: &[Value<'gc>],
         base_proto: Option<Object<'gc>>,
+        callee: Object<'gc>,
     ) -> Result<Self, Error> {
         let body: Result<_, Error> = method
             .body()
             .ok_or_else(|| "Cannot execute non-native method without body".into());
         let num_locals = body?.num_locals;
+        let has_rest_or_args = method.method().needs_arguments_object || method.method().needs_rest;
+        let arg_register = if has_rest_or_args { 1 } else { 0 };
         let num_declared_arguments = method.method().params.len() as u32;
         let local_registers = GcCell::allocate(
             context.gc_context,
-            RegisterSet::new(num_locals + num_declared_arguments + 1),
+            RegisterSet::new(num_locals + num_declared_arguments + arg_register + 1),
         );
 
         {
@@ -200,6 +203,79 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     .unwrap_or(Value::Undefined);
             }
         }
+
+        let mut activation = Self {
+            this,
+            arguments: None,
+            is_executing: false,
+            local_registers,
+            return_value: None,
+            local_scope: ScriptObject::bare_object(context.gc_context),
+            scope,
+            base_proto,
+            context,
+        };
+
+        if has_rest_or_args {
+            let args_array = if method.method().needs_arguments_object {
+                ArrayStorage::from_args(arguments)
+            } else if method.method().needs_rest {
+                if let Some(rest_args) = arguments.get(num_declared_arguments as usize..) {
+                    ArrayStorage::from_args(rest_args)
+                } else {
+                    ArrayStorage::new(0)
+                }
+            } else {
+                unreachable!();
+            };
+
+            let mut args_object = ArrayObject::from_array(
+                args_array,
+                activation
+                    .context
+                    .avm2
+                    .system_prototypes
+                    .as_ref()
+                    .unwrap()
+                    .array,
+                activation.context.gc_context,
+            );
+
+            if method.method().needs_arguments_object {
+                args_object.set_property(
+                    args_object,
+                    &QName::new(Namespace::public_namespace(), "callee"),
+                    callee.into(),
+                    &mut activation,
+                )?;
+            }
+
+            *local_registers
+                .write(activation.context.gc_context)
+                .get_mut(1 + num_declared_arguments)
+                .unwrap() = args_object.into();
+        }
+
+        Ok(activation)
+    }
+
+    /// Construct an activation for the execution of a builtin method.
+    ///
+    /// It is a logic error to attempt to execute builtins within the same
+    /// activation as the method or script that called them. You must use this
+    /// function to construct a new activation for the builtin so that it can
+    /// properly supercall.
+    ///
+    /// The `scope` provided here should be the scope of the builtin's caller
+    /// (for now), so that it may access global scope and propagate it to
+    /// called methods.
+    pub fn from_builtin(
+        context: UpdateContext<'a, 'gc, 'gc_context>,
+        scope: Option<GcCell<'gc, Scope<'gc>>>,
+        this: Option<Object<'gc>>,
+        base_proto: Option<Object<'gc>>,
+    ) -> Result<Self, Error> {
+        let local_registers = GcCell::allocate(context.gc_context, RegisterSet::new(0));
 
         Ok(Self {
             this,
@@ -221,6 +297,45 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         self.run_actions(init)?;
 
         Ok(())
+    }
+
+    pub fn global_scope(&self) -> Value<'gc> {
+        let mut scope = self.scope();
+
+        while let Some(this_scope) = scope {
+            let parent = this_scope.read().parent_cell();
+            if parent.is_none() {
+                break;
+            }
+
+            scope = parent;
+        }
+
+        scope
+            .map(|s| s.read().locals().clone().into())
+            .unwrap_or(Value::Undefined)
+    }
+
+    /// Call the superclass's instance initializer.
+    pub fn super_init(
+        &mut self,
+        receiver: Object<'gc>,
+        args: &[Value<'gc>],
+    ) -> Result<Value<'gc>, Error> {
+        let name = QName::new(Namespace::public_namespace(), "constructor");
+        let base_proto: Result<Object<'gc>, Error> =
+            self.base_proto().and_then(|p| p.proto()).ok_or_else(|| {
+                "Attempted to call super constructor without a superclass."
+                    .to_string()
+                    .into()
+            });
+        let mut base_proto = base_proto?;
+
+        let function = base_proto
+            .get_property(receiver, &name, self)?
+            .coerce_to_object(self)?;
+
+        function.call(Some(receiver), &args, self, Some(base_proto))
     }
 
     /// Attempts to lock the activation frame for execution.
@@ -516,6 +631,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 Op::RShift => self.op_rshift(),
                 Op::Subtract => self.op_subtract(),
                 Op::SubtractI => self.op_subtract_i(),
+                Op::Swap => self.op_swap(),
                 Op::URShift => self.op_urshift(),
                 Op::Jump { offset } => self.op_jump(offset, reader),
                 Op::IfTrue { offset } => self.op_if_true(offset, reader),
@@ -636,7 +752,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         Ok(FrameControl::Continue)
     }
 
-    fn op_push_short(&mut self, value: u32) -> Result<FrameControl<'gc>, Error> {
+    fn op_push_short(&mut self, value: i16) -> Result<FrameControl<'gc>, Error> {
         self.context.avm2.push(value);
         Ok(FrameControl::Continue)
     }
@@ -1126,22 +1242,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn op_get_global_scope(&mut self) -> Result<FrameControl<'gc>, Error> {
-        let mut scope = self.scope();
-
-        while let Some(this_scope) = scope {
-            let parent = this_scope.read().parent_cell();
-            if parent.is_none() {
-                break;
-            }
-
-            scope = parent;
-        }
-
-        self.context.avm2.push(
-            scope
-                .map(|s| s.read().locals().clone().into())
-                .unwrap_or(Value::Undefined),
-        );
+        self.context.avm2.push(self.global_scope());
 
         Ok(FrameControl::Continue)
     }
@@ -1302,20 +1403,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn op_construct_super(&mut self, arg_count: u32) -> Result<FrameControl<'gc>, Error> {
         let args = self.context.avm2.pop_args(arg_count);
         let receiver = self.context.avm2.pop().coerce_to_object(self)?;
-        let name = QName::new(Namespace::public_namespace(), "constructor");
-        let base_proto: Result<Object<'gc>, Error> =
-            self.base_proto().and_then(|p| p.proto()).ok_or_else(|| {
-                "Attempted to call super constructor without a superclass."
-                    .to_string()
-                    .into()
-            });
-        let mut base_proto = base_proto?;
 
-        let function = base_proto
-            .get_property(receiver, &name, self)?
-            .coerce_to_object(self)?;
-
-        function.call(Some(receiver), &args, self, Some(base_proto))?;
+        self.super_init(receiver, &args)?;
 
         Ok(FrameControl::Continue)
     }
@@ -1727,6 +1816,16 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let value1 = self.context.avm2.pop().coerce_to_i32(self)?;
 
         self.context.avm2.push(value1 - value2);
+
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_swap(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value2 = self.context.avm2.pop();
+        let value1 = self.context.avm2.pop();
+
+        self.context.avm2.push(value2);
+        self.context.avm2.push(value1);
 
         Ok(FrameControl::Continue)
     }

@@ -9,7 +9,7 @@ use crate::backend::locale::LocaleBackend;
 use crate::backend::navigator::{NavigatorBackend, RequestOptions};
 use crate::backend::storage::StorageBackend;
 use crate::backend::{
-    audio::AudioBackend, log::LogBackend, render::Letterbox, render::RenderBackend,
+    audio::AudioBackend, log::LogBackend, render::Letterbox, render::RenderBackend, ui::UiBackend,
 };
 use crate::context::{ActionQueue, ActionType, RenderContext, UpdateContext};
 use crate::display_object::{EditText, MorphShape, MovieClip};
@@ -23,7 +23,7 @@ use crate::prelude::*;
 use crate::property_map::PropertyMap;
 use crate::tag_utils::SwfMovie;
 use crate::transform::TransformStack;
-use crate::vminterface::Instantiator;
+use crate::vminterface::{AvmType, Instantiator};
 use enumset::EnumSet;
 use gc_arena::{make_arena, ArenaParameters, Collect, GcCell};
 use instant::Instant;
@@ -134,6 +134,7 @@ type Input = Box<dyn InputBackend>;
 type Storage = Box<dyn StorageBackend>;
 type Locale = Box<dyn LocaleBackend>;
 type Log = Box<dyn LogBackend>;
+type UI = Box<dyn UiBackend>;
 
 pub struct Player {
     /// The version of the player we're emulating.
@@ -159,6 +160,7 @@ pub struct Player {
     input: Input,
     locale: Locale,
     log: Log,
+    pub user_interface: UI,
     transform_stack: TransformStack,
     view_matrix: Matrix,
     inverse_view_matrix: Matrix,
@@ -203,8 +205,13 @@ pub struct Player {
     /// contexts to other parts of the player. It can be used to ensure the
     /// player lives across `await` calls in async code.
     self_reference: Option<Weak<Mutex<Self>>>,
+
+    /// The current frame of the main timeline, if available.
+    /// The first frame is frame 1.
+    current_frame: Option<u16>,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl Player {
     pub fn new(
         renderer: Renderer,
@@ -214,6 +221,7 @@ impl Player {
         storage: Storage,
         locale: Locale,
         log: Log,
+        user_interface: UI,
     ) -> Result<Arc<Mutex<Self>>, Error> {
         let fake_movie = Arc::new(SwfMovie::empty(NEWEST_PLAYER_VERSION));
         let movie_width = 550;
@@ -238,7 +246,7 @@ impl Player {
             view_matrix: Default::default(),
             inverse_view_matrix: Default::default(),
 
-            rng: SmallRng::from_seed([0u8; 16]), // TODO(Herschel): Get a proper seed on all platforms.
+            rng: SmallRng::seed_from_u64(chrono::Utc::now().timestamp_millis() as u64),
 
             gc_arena: GcArena::new(ArenaParameters::default(), |gc_context| {
                 GcRoot(GcCell::allocate(
@@ -280,12 +288,14 @@ impl Player {
             input,
             locale,
             log,
+            user_interface,
             self_reference: None,
             system: SystemProperties::default(),
             instance_counter: 0,
             time_til_next_timer: None,
             storage,
             max_execution_duration: Duration::from_secs(15),
+            current_frame: None,
         };
 
         player.mutate_with_update_context(|context| {
@@ -305,10 +315,10 @@ impl Player {
 
         player.build_matrices();
         player.audio.set_frame_rate(frame_rate);
-
         let player_box = Arc::new(Mutex::new(player));
         let mut player_lock = player_box.lock().unwrap();
         player_lock.self_reference = Some(Arc::downgrade(&player_box));
+
         std::mem::drop(player_lock);
 
         Ok(player_box)
@@ -377,7 +387,7 @@ impl Player {
                 None
             };
             root.post_instantiation(context, root, flashvars, Instantiator::Movie, false);
-            root.set_name(context.gc_context, "");
+            root.set_default_root_name(context);
             context.levels.insert(0, root);
 
             // Load and parse the device font.
@@ -391,10 +401,7 @@ impl Player {
                     }
                 };
 
-            context
-                .library
-                .library_for_movie_mut(context.swf.clone())
-                .set_device_font(device_font);
+            context.library.set_device_font(device_font);
 
             // Set the version parameter on the root.
             let mut activation = Activation::from_stub(
@@ -627,7 +634,7 @@ impl Player {
             });
         }
 
-        // Propagte clip events.
+        // Propagate clip events.
         self.mutate_with_update_context(|context| {
             let (clip_event, listener) = match event {
                 PlayerEvent::KeyDown { .. } => {
@@ -802,6 +809,7 @@ impl Player {
     /// This should only be called once. Further movie loads should preload the
     /// specific `MovieClip` referenced.
     fn preload(&mut self) {
+        let mut is_action_script_3 = false;
         self.mutate_with_update_context(|context| {
             let mut morph_shapes = fnv::FnvHashMap::default();
             let root = *context.levels.get(&0).expect("root level");
@@ -809,15 +817,20 @@ impl Player {
                 .unwrap()
                 .preload(context, &mut morph_shapes);
 
+            let lib = context
+                .library
+                .library_for_movie_mut(root.as_movie_clip().unwrap().movie().unwrap());
+
+            is_action_script_3 = lib.avm_type() == AvmType::Avm2;
             // Finalize morph shapes.
             for (id, static_data) in morph_shapes {
                 let morph_shape = MorphShape::new(context.gc_context, static_data);
-                context
-                    .library
-                    .library_for_movie_mut(root.as_movie_clip().unwrap().movie().unwrap())
-                    .register_character(id, crate::character::Character::MorphShape(morph_shape));
+                lib.register_character(id, crate::character::Character::MorphShape(morph_shape));
             }
         });
+        if is_action_script_3 {
+            self.user_interface.message("This SWF contains ActionScript 3 which is not yet supported by Ruffle. The movie may not work as intended.");
+        }
     }
 
     pub fn run_frame(&mut self) {
@@ -872,6 +885,12 @@ impl Player {
         self.renderer.draw_letterbox(self.letterbox);
         self.renderer.end_frame();
         self.needs_render = false;
+    }
+
+    /// The current frame of the main timeline, if available.
+    /// The first frame is frame 1.
+    pub fn current_frame(&self) -> Option<u16> {
+        self.current_frame
     }
 
     pub fn audio(&self) -> &Audio {
@@ -1089,6 +1108,7 @@ impl Player {
             logging,
             needs_render,
             max_execution_duration,
+            current_frame,
         ) = (
             self.player_version,
             &self.swf,
@@ -1109,6 +1129,7 @@ impl Player {
             self.log.deref_mut(),
             &mut self.needs_render,
             self.max_execution_duration,
+            &mut self.current_frame,
         );
 
         self.gc_arena.mutate(|gc_context, gc_root| {
@@ -1146,7 +1167,6 @@ impl Player {
                 mouse_position,
                 drag_object,
                 stage_size: (stage_width, stage_height),
-                system_prototypes: avm1.prototypes().clone(),
                 player,
                 load_manager,
                 system: system_properties,
@@ -1168,8 +1188,15 @@ impl Player {
 
             let ret = f(&mut update_context);
 
+            *current_frame = update_context
+                .levels
+                .get(&0)
+                .and_then(|root| root.as_movie_clip())
+                .map(|clip| clip.current_frame());
+
             // Hovered object may have been updated; copy it back to the GC root.
             root_data.mouse_hovered_object = update_context.mouse_hovered_object;
+
             ret
         })
     }

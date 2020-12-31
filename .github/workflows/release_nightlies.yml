@@ -38,7 +38,7 @@ jobs:
              fi
           fi
           if [ $alive -eq 1 ]; then
-             echo ::set-env name=GHA_REPO_ALIVE::true
+            echo "GHA_REPO_ALIVE=true" >> $GITHUB_ENV
           fi
         shell: bash
 
@@ -87,6 +87,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get -y install libasound2-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
       - name: Setup node
         if: matrix.os == 'ubuntu-latest'
         uses: actions/setup-node@v1
@@ -99,6 +102,7 @@ jobs:
         run: |
           npm run bootstrap
           npm run build
+          npm run docs
 
       - name: Build desktop
         uses: actions-rs/cargo@v1
@@ -117,7 +121,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           cp target/release/ruffle_desktop.exe release/ruffle.exe
-          7z a release.zip release/*
+          7z a release.zip ./release/*
 
       - name: Package linux/mac
         if: matrix.os == 'macOS-latest' || matrix.os == 'ubuntu-latest'
@@ -233,4 +237,41 @@ jobs:
           repository: ruffle-rs/demo
           github_token: ${{ secrets.RUFFLE_BUILD_TOKEN }}
           directory: demo
+          force: true
+
+      - name: Clone js docs
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/checkout@v2
+        with:
+          repository: ruffle-rs/js-docs
+          path: js-docs
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false # Needed to allow commit via RUFFLE_BUILD_TOKEN below
+
+      - name: Update js docs
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd js-docs
+
+          # Delete the old docs
+          rm -rf master
+
+          # Copy the fresh docs into this folder.
+          cp -R ../web/packages/core/docs master
+
+          # Create git commit. Amend previous commit to avoid daily commit spam.
+          git config user.email "ruffle@ruffle.rs"
+          git config user.name "RuffleBuild"
+          git add -A
+          git commit --amend -am "Nightly build ${{ needs.create-nightly-release.outputs.date }}"
+          cd ..
+
+      - name: Push js docs
+        if: matrix.os == 'ubuntu-latest'
+        uses: ad-m/github-push-action@master
+        with:
+          repository: ruffle-rs/js-docs
+          github_token: ${{ secrets.RUFFLE_BUILD_TOKEN }}
+          directory: js-docs
           force: true

@@ -80,21 +80,10 @@ impl SwfMovie {
         // Sometimes SWFs will have an incorrectly compressed stream,
         // but will otherwise decompress fine up to the End tag.
         // So just warn on this case and try to continue gracefully.
-        let data = if header.compression == swf::Compression::Lzma {
-            // TODO: The LZMA decoder is still funky.
-            // It always errors, and doesn't return all the data if you use read_to_end,
-            // but read_exact at least returns the data... why?
-            // Does the decoder need to be flushed somehow?
-            let mut data = vec![0u8; swf_stream.uncompressed_length];
-            let _ = reader.get_mut().read_exact(&mut data);
-            data
-        } else {
-            let mut data = Vec::with_capacity(swf_stream.uncompressed_length);
-            if let Err(e) = reader.get_mut().read_to_end(&mut data) {
-                return Err(format!("Error decompressing SWF, may be corrupt: {}", e).into());
-            }
-            data
-        };
+        let mut data = Vec::with_capacity(swf_stream.uncompressed_length);
+        if let Err(e) = reader.get_mut().read_to_end(&mut data) {
+            return Err(format!("Error decompressing SWF, may be corrupt: {}", e).into());
+        }
 
         Ok(Self {
             header,
@@ -201,6 +190,26 @@ impl SwfSlice {
         let slice_pval = slice.as_ptr() as usize;
 
         if (self_pval + self.start) <= slice_pval && slice_pval < (self_pval + self.end) {
+            Some(SwfSlice {
+                movie: self.movie.clone(),
+                start: slice_pval - self_pval,
+                end: (slice_pval - self_pval) + slice.len(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Construct a new SwfSlice from a movie subslice.
+    ///
+    /// This function allows subslices outside the current slice to be formed,
+    /// as long as they are valid subslices of the movie itself.
+    pub fn to_unbounded_subslice(&self, slice: &[u8]) -> Option<SwfSlice> {
+        let self_pval = self.movie.data().as_ptr() as usize;
+        let self_len = self.movie.data().len();
+        let slice_pval = slice.as_ptr() as usize;
+
+        if self_pval <= slice_pval && slice_pval < (self_pval + self_len) {
             Some(SwfSlice {
                 movie: self.movie.clone(),
                 start: slice_pval - self_pval,

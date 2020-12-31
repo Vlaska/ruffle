@@ -9,9 +9,13 @@ use crate::avm1::property::Attribute;
 
 use crate::avm1::activation::Activation;
 use crate::avm1::object::bevel_filter::BevelFilterObject;
+use crate::avm1::object::bitmap_data::BitmapDataObject;
 use crate::avm1::object::blur_filter::BlurFilterObject;
+use crate::avm1::object::color_matrix_filter::ColorMatrixFilterObject;
 use crate::avm1::object::color_transform_object::ColorTransformObject;
 use crate::avm1::object::date_object::DateObject;
+use crate::avm1::object::drop_shadow_filter::DropShadowFilterObject;
+use crate::avm1::object::glow_filter::GlowFilterObject;
 use crate::avm1::object::transform_object::TransformObject;
 use crate::avm1::object::xml_attributes_object::XMLAttributesObject;
 use crate::avm1::object::xml_idmap_object::XMLIDMapObject;
@@ -27,10 +31,14 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 
 pub mod bevel_filter;
+pub mod bitmap_data;
 pub mod blur_filter;
+pub mod color_matrix_filter;
 pub mod color_transform_object;
 mod custom_object;
 pub mod date_object;
+pub mod drop_shadow_filter;
+pub mod glow_filter;
 pub mod script_object;
 pub mod shared_object;
 pub mod sound_object;
@@ -62,7 +70,11 @@ pub mod xml_object;
         TransformObject(TransformObject<'gc>),
         BlurFilterObject(BlurFilterObject<'gc>),
         BevelFilterObject(BevelFilterObject<'gc>),
+        GlowFilterObject(GlowFilterObject<'gc>),
+        DropShadowFilterObject(DropShadowFilterObject<'gc>),
+        ColorMatrixFilterObject(ColorMatrixFilterObject<'gc>),
         DateObject(DateObject<'gc>),
+        BitmapData(BitmapDataObject<'gc>),
     }
 )]
 pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy {
@@ -446,6 +458,26 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Get the underlying `BevelFilterObject`, if it exists
     fn as_bevel_filter_object(&self) -> Option<BevelFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `GlowFilterObject`, if it exists
+    fn as_glow_filter_object(&self) -> Option<GlowFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `DropShadowFilterObject`, if it exists
+    fn as_drop_shadow_filter_object(&self) -> Option<DropShadowFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `ColorMatrixFilterObject`, if it exists
+    fn as_color_matrix_filter_object(&self) -> Option<ColorMatrixFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `BitmapDataObject`, if it exists
+    fn as_bitmap_data_object(&self) -> Option<BitmapDataObject<'gc>> {
         None
     }
 

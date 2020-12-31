@@ -22,6 +22,8 @@ pub fn instance_init<'gc>(
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error> {
     if let Some(this) = this {
+        activation.super_init(this, &[])?;
+
         if let Some(mut array) = this.as_array_storage_mut(activation.context.gc_context) {
             if args.len() == 1 {
                 if let Some(expected_len) = args
@@ -113,7 +115,7 @@ pub fn concat<'gc>(
 }
 
 /// Resolves array holes.
-fn resolve_array_hole<'gc>(
+pub fn resolve_array_hole<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     this: Object<'gc>,
     i: usize,

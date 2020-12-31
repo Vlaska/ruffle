@@ -7,6 +7,7 @@ use ruffle_core::backend::locale::NullLocaleBackend;
 use ruffle_core::backend::log::LogBackend;
 use ruffle_core::backend::navigator::{NullExecutor, NullNavigatorBackend};
 use ruffle_core::backend::storage::MemoryStorageBackend;
+use ruffle_core::backend::ui::NullUiBackend;
 use ruffle_core::backend::{
     audio::NullAudioBackend, input::NullInputBackend, render::NullRenderer,
 };
@@ -135,6 +136,7 @@ swf_tests! {
     (movieclip_prototype_extension, "avm1/movieclip_prototype_extension", 1),
     (movieclip_hittest, "avm1/movieclip_hittest", 1),
     (movieclip_hittest_shapeflag, "avm1/movieclip_hittest_shapeflag", 10),
+    (movieclip_lockroot, "avm1/movieclip_lockroot", 10),
     #[ignore] (textfield_text, "avm1/textfield_text", 1),
     (recursive_prototypes, "avm1/recursive_prototypes", 2),
     (stage_object_children, "avm1/stage_object_children", 2),
@@ -157,6 +159,7 @@ swf_tests! {
     (equals2_swf5, "avm1/equals2_swf5", 1),
     (equals2_swf6, "avm1/equals2_swf6", 1),
     (equals2_swf7, "avm1/equals2_swf7", 1),
+    (escape, "avm1/escape", 1),
     (register_class, "avm1/register_class", 1),
     (register_and_init_order, "avm1/register_and_init_order", 1),
     (on_construct, "avm1/on_construct", 1),
@@ -187,6 +190,8 @@ swf_tests! {
     (xml_to_string, "avm1/xml_to_string", 1),
     (xml_to_string_comment, "avm1/xml_to_string_comment", 1),
     (xml_idmap, "avm1/xml_idmap", 1),
+    (xml_ignore_comments, "avm1/xml_ignore_comments", 1),
+    (xml_ignore_white, "avm1/xml_ignore_white", 1),
     (xml_inspect_doctype, "avm1/xml_inspect_doctype", 1),
     #[ignore] (xml_inspect_xmldecl, "avm1/xml_inspect_xmldecl", 1),
     (xml_inspect_createmethods, "avm1/xml_inspect_createmethods", 1),
@@ -233,6 +238,8 @@ swf_tests! {
     (issue_710, "avm1/issue_710", 1),
     (issue_1086, "avm1/issue_1086", 1),
     (issue_1104, "avm1/issue_1104", 3),
+    (issue_1906, "avm1/issue_1906", 2),
+    (issue_2030, "avm1/issue_2030", 1),
     (function_as_function, "avm1/function_as_function", 1),
     (infinite_recursion_function, "avm1/infinite_recursion_function", 1),
     (infinite_recursion_function_in_setter, "avm1/infinite_recursion_function_in_setter", 1),
@@ -245,6 +252,9 @@ swf_tests! {
     #[ignore] (edittext_html_roundtrip, "avm1/edittext_html_roundtrip", 1),
     (edittext_newline_stripping, "avm1/edittext_newline_stripping", 1),
     (define_local, "avm1/define_local", 1),
+    (textfield_properties, "avm1/textfield_properties", 1),
+    (textfield_background_color, "avm1/textfield_background_color", 1),
+    (textfield_border_color, "avm1/textfield_border_color", 1),
     (textfield_variable, "avm1/textfield_variable", 8),
     (error, "avm1/error", 1),
     (color_transform, "avm1/color_transform", 1),
@@ -263,6 +273,7 @@ swf_tests! {
     (parse_int, "avm1/parse_int", 1),
     (bitmap_filter, "avm1/bitmap_filter", 1),
     (blur_filter, "avm1/blur_filter", 1),
+    (glow_filter, "avm1/glow_filter", 1),
     (date_constructor, "avm1/date/constructor", 1),
     (removed_clip_halts_script, "avm1/removed_clip_halts_script", 13),
     (date_utc, "avm1/date/UTC", 1),
@@ -284,6 +295,10 @@ swf_tests! {
     (date_set_year, "avm1/date/setYear", 1),
     (this_scoping, "avm1/this_scoping", 1),
     (bevel_filter, "avm1/bevel_filter", 1),
+    (drop_shadow_filter, "avm1/drop_shadow_filter", 1),
+    (color_matrix_filter, "avm1/color_matrix_filter", 1),
+    (bitmap_data, "avm1/bitmap_data", 1),
+    (array_call_method, "avm1/array_call_method", 1),
     (as3_hello_world, "avm2/hello_world", 1),
     (as3_function_call, "avm2/function_call", 1),
     (as3_function_call_via_call, "avm2/function_call_via_call", 1),
@@ -316,6 +331,8 @@ swf_tests! {
     (as3_if_strictne, "avm2/if_strictne", 1),
     (as3_strict_equality, "avm2/strict_equality", 1),
     (as3_es4_interfaces, "avm2/es4_interfaces", 1),
+    (as3_is_finite, "avm2/is_finite", 1),
+    (as3_is_nan, "avm2/is_nan", 1),
     (as3_istype, "avm2/istype", 1),
     (as3_instanceof, "avm2/instanceof", 1),
     (as3_truthiness, "avm2/truthiness", 1),
@@ -409,6 +426,59 @@ swf_tests! {
     (as3_movieclip_constr, "avm2/movieclip_constr", 1),
     (as3_lazyinit, "avm2/lazyinit", 1),
     (as3_trace, "avm2/trace", 1),
+    (as3_displayobjectcontainer_getchildat, "avm2/displayobjectcontainer_getchildat", 1),
+    (as3_displayobjectcontainer_getchildbyname, "avm2/displayobjectcontainer_getchildbyname", 1),
+    (as3_displayobjectcontainer_addchild, "avm2/displayobjectcontainer_addchild", 1),
+    (as3_displayobjectcontainer_addchildat, "avm2/displayobjectcontainer_addchildat", 1),
+    (as3_displayobjectcontainer_removechild, "avm2/displayobjectcontainer_removechild", 1),
+    (as3_displayobjectcontainer_removechild_timelinemanip_remove1, "avm2/displayobjectcontainer_removechild_timelinemanip_remove1", 7),
+    (as3_displayobjectcontainer_addchild_timelinepull0, "avm2/displayobjectcontainer_addchild_timelinepull0", 7),
+    (as3_displayobjectcontainer_addchild_timelinepull1, "avm2/displayobjectcontainer_addchild_timelinepull1", 7),
+    (as3_displayobjectcontainer_addchild_timelinepull2, "avm2/displayobjectcontainer_addchild_timelinepull2", 7),
+    (as3_displayobjectcontainer_addchildat_timelinelock0, "avm2/displayobjectcontainer_addchildat_timelinelock0", 7),
+    (as3_displayobjectcontainer_addchildat_timelinelock1, "avm2/displayobjectcontainer_addchildat_timelinelock1", 7),
+    (as3_displayobjectcontainer_addchildat_timelinelock2, "avm2/displayobjectcontainer_addchildat_timelinelock2", 7),
+    (as3_displayobjectcontainer_contains, "avm2/displayobjectcontainer_contains", 5),
+    (as3_displayobjectcontainer_getchildindex, "avm2/displayobjectcontainer_getchildindex", 5),
+    (as3_displayobjectcontainer_removechildat, "avm2/displayobjectcontainer_removechildat", 1),
+    (as3_displayobjectcontainer_removechildren, "avm2/displayobjectcontainer_removechildren", 5),
+    (as3_displayobjectcontainer_setchildindex, "avm2/displayobjectcontainer_setchildindex", 1),
+    (as3_displayobjectcontainer_swapchildren, "avm2/displayobjectcontainer_swapchildren", 1),
+    (as3_displayobjectcontainer_swapchildrenat, "avm2/displayobjectcontainer_swapchildrenat", 1),
+    (button_order, "avm1/button_order", 1),
+    (as3_displayobjectcontainer_stopallmovieclips, "avm2/displayobjectcontainer_stopallmovieclips", 2),
+    (as3_displayobjectcontainer_timelineinstance, "avm2/displayobjectcontainer_timelineinstance", 6),
+    (as3_displayobject_alpha, "avm2/displayobject_alpha", 1),
+    (as3_displayobject_x, "avm2/displayobject_x", 1),
+    (as3_displayobject_y, "avm2/displayobject_y", 1),
+    (as3_displayobject_name, "avm2/displayobject_name", 4),
+    (as3_displayobject_parent, "avm2/displayobject_parent", 4),
+    (as3_displayobject_root, "avm2/displayobject_root", 4),
+    (as3_displayobject_visible, "avm2/displayobject_visible", 4),
+    (as3_displayobject_hittestpoint, "avm2/displayobject_hittestpoint", 2),
+    (as3_displayobject_hittestobject, "avm2/displayobject_hittestobject", 1),
+    (as3_event_valueof_tostring, "avm2/event_valueof_tostring", 1),
+    (as3_event_bubbles, "avm2/event_bubbles", 1),
+    (as3_event_cancelable, "avm2/event_cancelable", 1),
+    (as3_event_type, "avm2/event_type", 1),
+    (as3_event_clone, "avm2/event_clone", 1),
+    (as3_event_formattostring, "avm2/event_formattostring", 1),
+    (as3_event_isdefaultprevented, "avm2/event_isdefaultprevented", 1),
+    (as3_function_call_via_apply, "avm2/function_call_via_apply", 1),
+    (as3_function_call_arguments, "avm2/function_call_arguments", 1),
+    (as3_function_call_rest, "avm2/function_call_rest", 1),
+    (as3_eventdispatcher_haseventlistener, "avm2/eventdispatcher_haseventlistener", 1),
+    (as3_eventdispatcher_willtrigger, "avm2/eventdispatcher_willtrigger", 1),
+    (as3_movieclip_willtrigger, "avm2/movieclip_willtrigger", 3),
+    (as3_eventdispatcher_dispatchevent, "avm2/eventdispatcher_dispatchevent", 1),
+    (as3_eventdispatcher_dispatchevent_handlerorder, "avm2/eventdispatcher_dispatchevent_handlerorder", 1),
+    (as3_eventdispatcher_dispatchevent_cancel, "avm2/eventdispatcher_dispatchevent_cancel", 1),
+    (as3_eventdispatcher_dispatchevent_this, "avm2/eventdispatcher_dispatchevent_this", 1),
+    (as3_movieclip_dispatchevent, "avm2/movieclip_dispatchevent", 1),
+    (as3_movieclip_dispatchevent_handlerorder, "avm2/movieclip_dispatchevent_handlerorder", 1),
+    (as3_movieclip_dispatchevent_cancel, "avm2/movieclip_dispatchevent_cancel", 1),
+    (as3_movieclip_dispatchevent_target, "avm2/movieclip_dispatchevent_target", 1),
+    (as3_movieclip_dispatchevent_selfadd, "avm2/movieclip_dispatchevent_selfadd", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -416,9 +486,10 @@ swf_tests! {
 // Some will probably always need to be approx. (if they rely on trig functions, etc.)
 swf_tests_approx! {
     (local_to_global, "avm1/local_to_global", 1, epsilon = 0.051),
-    (stage_object_properties, "avm1/stage_object_properties", 5, epsilon = 0.051),
+    (stage_object_properties, "avm1/stage_object_properties", 6, epsilon = 0.051),
     (stage_object_properties_swf6, "avm1/stage_object_properties_swf6", 4, epsilon = 0.051),
     (movieclip_getbounds, "avm1/movieclip_getbounds", 1, epsilon = 0.051),
+    (parse_float, "avm1/parse_float", 1, max_relative = 5.0 * std::f64::EPSILON),
     (edittext_letter_spacing, "avm1/edittext_letter_spacing", 1, epsilon = 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
     (edittext_align, "avm1/edittext_align", 1, epsilon = 3.0),
     (edittext_margins, "avm1/edittext_margins", 1, epsilon = 5.0), // TODO: Discrepancy in wrapping.
@@ -428,6 +499,9 @@ swf_tests_approx! {
     (as3_coerce_string_precision, "avm2/coerce_string_precision", 1, max_relative = 30.0 * std::f64::EPSILON),
     (as3_divide, "avm2/divide", 1, epsilon = 0.0), // TODO: Discrepancy in float formatting.
     (as3_math, "avm2/math", 1, max_relative = 30.0 * std::f64::EPSILON),
+    (as3_displayobject_height, "avm2/displayobject_height", 7, epsilon = 0.06), // TODO: height/width appears to be off by 1 twip sometimes
+    (as3_displayobject_width, "avm2/displayobject_width", 7, epsilon = 0.06),
+    (as3_displayobject_rotation, "avm2/displayobject_rotation", 1, epsilon = 0.0000000001),
 }
 
 #[test]
@@ -627,6 +701,7 @@ fn run_swf(
         Box::new(MemoryStorageBackend::default()),
         Box::new(NullLocaleBackend::new()),
         Box::new(TestLogBackend::new(trace_output.clone())),
+        Box::new(NullUiBackend::new()),
     )?;
     player.lock().unwrap().set_root_movie(Arc::new(movie));
     player

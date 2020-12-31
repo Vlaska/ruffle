@@ -2,7 +2,7 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::property::Attribute::*;
-use crate::avm1::{Object, ScriptObject, TObject, Value};
+use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
 use enumset::EnumSet;
 use gc_arena::Collect;
 use gc_arena::MutationContext;
@@ -12,19 +12,23 @@ use std::f64;
 mod array;
 pub(crate) mod as_broadcaster;
 mod bevel_filter;
+mod bitmap_data;
 mod bitmap_filter;
 mod blur_filter;
 pub(crate) mod boolean;
 pub(crate) mod button;
 mod color;
+pub mod color_matrix_filter;
 mod color_transform;
 pub(crate) mod context_menu;
 pub(crate) mod context_menu_item;
 mod date;
 pub(crate) mod display_object;
+pub mod drop_shadow_filter;
 pub(crate) mod error;
 mod external_interface;
 mod function;
+mod glow_filter;
 mod key;
 mod load_vars;
 mod math;
@@ -56,8 +60,8 @@ pub fn random<'gc>(
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     match args.get(0) {
-        Some(Value::Number(max)) => {
-            Ok(activation.context.rng.gen_range(0.0f64, max).floor().into())
+        Some(&Value::Number(max)) => {
+            Ok(activation.context.rng.gen_range(0.0f64..max).floor().into())
         }
         _ => Ok(Value::Undefined), //TODO: Shouldn't this be an error condition?
     }
@@ -215,6 +219,64 @@ pub fn get_nan<'gc>(
     }
 }
 
+pub fn parse_float<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let s = if let Some(val) = args.get(0) {
+        val.coerce_to_string(activation)?
+    } else {
+        return Ok(f64::NAN.into());
+    };
+
+    let s = s.trim_start().bytes();
+    let mut out_str = String::with_capacity(s.len());
+
+    // TODO: Implementing this in a very janky way for now,
+    // feeding the string to Rust's float parser.
+    // Flash's parser is much more lenient, so we have to massage
+    // the string into an acceptable format.
+    let mut allow_dot = true;
+    let mut allow_exp = true;
+    let mut allow_sign = true;
+    for c in s {
+        match c {
+            b'0'..=b'9' => {
+                allow_sign = false;
+                out_str.push(c.into());
+            }
+            b'+' | b'-' if allow_sign => {
+                // Sign allowed at first char and following e
+                allow_sign = false;
+                out_str.push(c.into());
+            }
+            b'.' if allow_exp => {
+                // Flash allows multiple . except after e
+                allow_sign = false;
+                if allow_dot {
+                    allow_dot = false;
+                    out_str.push(c.into());
+                } else {
+                    allow_exp = false;
+                }
+            }
+            b'e' | b'E' if allow_exp => {
+                allow_sign = true;
+                allow_exp = false;
+                allow_dot = false;
+                out_str.push(c.into());
+            }
+
+            // Invalid char, `parseFloat` ignores all trailing garbage.
+            _ => break,
+        };
+    }
+
+    let n = out_str.parse::<f64>().unwrap_or(f64::NAN);
+    Ok(n.into())
+}
+
 pub fn set_interval<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
 
@@ -303,6 +365,33 @@ pub fn update_after_event<'gc>(
     Ok(Value::Undefined)
 }
 
+pub fn escape<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let s = if let Some(val) = args.get(0) {
+        val.coerce_to_string(activation)?
+    } else {
+        return Ok(Value::Undefined);
+    };
+
+    let mut buffer = String::new();
+    for c in s.bytes() {
+        match c {
+            // ECMA-262 violation: @*_+-./ are not unescaped chars.
+            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => {
+                buffer.push(c.into());
+            }
+            // ECMA-262 violation: Avm1 does not support unicode escapes.
+            _ => {
+                buffer.push_str(&format!("%{:02X}", c));
+            }
+        };
+    }
+    Ok(AvmString::new(activation.context.gc_context, buffer).into())
+}
+
 /// This structure represents all system builtins that are used regardless of
 /// whatever the hell happens to `_global`. These are, of course,
 /// user-modifiable.
@@ -345,7 +434,15 @@ pub struct SystemPrototypes<'gc> {
     pub blur_filter_constructor: Object<'gc>,
     pub bevel_filter: Object<'gc>,
     pub bevel_filter_constructor: Object<'gc>,
+    pub glow_filter: Object<'gc>,
+    pub glow_filter_constructor: Object<'gc>,
+    pub drop_shadow_filter: Object<'gc>,
+    pub drop_shadow_filter_constructor: Object<'gc>,
+    pub color_matrix_filter: Object<'gc>,
+    pub color_matrix_filter_constructor: Object<'gc>,
     pub date: Object<'gc>,
+    pub bitmap_data: Object<'gc>,
+    pub bitmap_data_constructor: Object<'gc>,
 }
 
 /// Initialize default global scope and builtins for an AVM1 instance.
@@ -506,6 +603,7 @@ pub fn create_globals<'gc>(
 
     let geom = ScriptObject::object(gc_context, Some(object_proto));
     let filters = ScriptObject::object(gc_context, Some(object_proto));
+    let display = ScriptObject::object(gc_context, Some(object_proto));
 
     let matrix = matrix::create_matrix_object(gc_context, matrix_proto, Some(function_proto));
     let point = point::create_point_object(gc_context, point_proto, Some(function_proto));
@@ -526,6 +624,7 @@ pub fn create_globals<'gc>(
 
     flash.define_value(gc_context, "geom", geom.into(), EnumSet::empty());
     flash.define_value(gc_context, "filters", filters.into(), EnumSet::empty());
+    flash.define_value(gc_context, "display", display.into(), EnumSet::empty());
     geom.define_value(gc_context, "Matrix", matrix.into(), EnumSet::empty());
     geom.define_value(gc_context, "Point", point.into(), EnumSet::empty());
     geom.define_value(gc_context, "Rectangle", rectangle.into(), EnumSet::empty());
@@ -564,6 +663,33 @@ pub fn create_globals<'gc>(
         bevel_filter_proto,
     );
 
+    let glow_filter_proto =
+        glow_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let glow_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(glow_filter::constructor),
+        Some(function_proto),
+        glow_filter_proto,
+    );
+
+    let drop_shadow_filter_proto =
+        drop_shadow_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let drop_shadow_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(drop_shadow_filter::constructor),
+        Some(function_proto),
+        drop_shadow_filter_proto,
+    );
+
+    let color_matrix_filter_proto =
+        color_matrix_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let color_matrix_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(color_matrix_filter::constructor),
+        Some(function_proto),
+        color_matrix_filter_proto,
+    );
+
     filters.define_value(
         gc_context,
         "BitmapFilter",
@@ -580,6 +706,35 @@ pub fn create_globals<'gc>(
         gc_context,
         "BevelFilter",
         bevel_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "GlowFilter",
+        glow_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "DropShadowFilter",
+        drop_shadow_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "ColorMatrixFilter",
+        color_matrix_filter.into(),
+        EnumSet::empty(),
+    );
+
+    let bitmap_data_proto = bitmap_data::create_proto(gc_context, object_proto, function_proto);
+    let bitmap_data =
+        bitmap_data::create_bitmap_data_object(gc_context, bitmap_data_proto, Some(function_proto));
+
+    display.define_value(
+        gc_context,
+        "BitmapData",
+        bitmap_data.into(),
         EnumSet::empty(),
     );
 
@@ -766,6 +921,13 @@ pub fn create_globals<'gc>(
         DontEnum,
         Some(function_proto),
     );
+    globals.force_set_function(
+        "parseFloat",
+        parse_float,
+        gc_context,
+        DontEnum,
+        Some(function_proto),
+    );
     globals.force_set_function("random", random, gc_context, DontEnum, Some(function_proto));
     globals.force_set_function(
         "ASSetPropFlags",
@@ -802,6 +964,7 @@ pub fn create_globals<'gc>(
         DontEnum,
         Some(function_proto),
     );
+    globals.force_set_function("escape", escape, gc_context, DontEnum, Some(function_proto));
 
     globals.add_property(
         gc_context,
@@ -866,7 +1029,15 @@ pub fn create_globals<'gc>(
             blur_filter_constructor: blur_filter,
             bevel_filter: bevel_filter_proto,
             bevel_filter_constructor: bevel_filter,
+            glow_filter: glow_filter_proto,
+            glow_filter_constructor: glow_filter,
+            drop_shadow_filter: drop_shadow_filter_proto,
+            drop_shadow_filter_constructor: drop_shadow_filter,
+            color_matrix_filter: color_matrix_filter_proto,
+            color_matrix_filter_constructor: color_matrix_filter,
             date: date_proto,
+            bitmap_data: bitmap_data_proto,
+            bitmap_data_constructor: bitmap_data,
         },
         globals.into(),
         broadcaster_functions,

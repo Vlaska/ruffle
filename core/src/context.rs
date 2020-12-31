@@ -1,5 +1,4 @@
 //! Contexts and helper types passed between functions.
-use crate::avm1;
 
 use crate::avm1::globals::system::SystemProperties;
 use crate::avm1::{Avm1, Object as Avm1Object, Timers, Value as Avm1Value};
@@ -59,7 +58,7 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     pub swf: &'a Arc<SwfMovie>,
 
     /// The audio backend, used by display objects and AVM to play audio.
-    pub audio: &'a mut (dyn AudioBackend + 'a),
+    pub audio: &'a mut dyn AudioBackend,
 
     /// The navigator backend, used by the AVM to make HTTP requests and visit webpages.
     pub navigator: &'a mut (dyn NavigatorBackend + 'a),
@@ -84,10 +83,6 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
 
     /// All loaded levels of the current player.
     pub levels: &'a mut BTreeMap<u32, DisplayObject<'gc>>,
-
-    /// The current set of system-specified prototypes to use when constructing
-    /// new built-in objects.
-    pub system_prototypes: avm1::SystemPrototypes<'gc>,
 
     /// The display object that the mouse is currently hovering over.
     pub mouse_hovered_object: Option<DisplayObject<'gc>>,
@@ -163,7 +158,6 @@ unsafe impl<'a, 'gc, 'gc_context> Collect for UpdateContext<'a, 'gc, 'gc_context
         self.storage.trace(cc);
         self.rng.trace(cc);
         self.levels.trace(cc);
-        self.system_prototypes.trace(cc);
         self.mouse_hovered_object.trace(cc);
         self.mouse_position.trace(cc);
         self.drag_object.trace(cc);
@@ -208,7 +202,6 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
             storage: self.storage,
             rng: self.rng,
             levels: self.levels,
-            system_prototypes: self.system_prototypes.clone(),
             mouse_hovered_object: self.mouse_hovered_object,
             mouse_position: self.mouse_position,
             drag_object: self.drag_object,

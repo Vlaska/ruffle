@@ -227,6 +227,7 @@ impl<'gc> XMLNode<'gc> {
         mc: MutationContext<'gc, '_>,
         data: &str,
         process_entity: bool,
+        ignore_white: bool,
     ) -> Result<(), Error> {
         let mut parser = Reader::from_str(data);
         let mut buf = Vec::new();
@@ -257,7 +258,9 @@ impl<'gc> XMLNode<'gc> {
                 }
                 Event::Text(bt) => {
                     let child = XMLNode::text_from_text_event(mc, bt, document, process_entity)?;
-                    if child.node_value().as_deref() != Some("") {
+                    if child.node_value().as_deref() != Some("")
+                        && (!ignore_white || !child.is_whitespace_text())
+                    {
                         self.add_child_to_tree(mc, &mut open_tags, child)?;
                     }
                 }
@@ -793,7 +796,10 @@ impl<'gc> XMLNode<'gc> {
     /// Document roots and elements can yield children, while all other
     /// elements are structurally prohibited from adopting child `XMLNode`s.
     pub fn has_children(self) -> bool {
-        matches!(*self.0.read(), XMLNodeData::Element { .. } | XMLNodeData::DocumentRoot { .. })
+        matches!(
+            *self.0.read(),
+            XMLNodeData::Element { .. } | XMLNodeData::DocumentRoot { .. }
+        )
     }
 
     /// Returns an iterator that yields child nodes.
@@ -945,6 +951,12 @@ impl<'gc> XMLNode<'gc> {
     /// Check if this XML node constitutes text.
     pub fn is_text(self) -> bool {
         matches!(*self.0.read(), XMLNodeData::Text { .. })
+    }
+
+    // Check if this XML node is constitutes text and only contains whitespace.
+    pub fn is_whitespace_text(self) -> bool {
+        const WHITESPACE_CHARS: &[u8] = &[b' ', b'\t', b'\r', b'\n'];
+        matches!(&*self.0.read(), XMLNodeData::Text { contents, .. } if contents.bytes().all(|c| WHITESPACE_CHARS.contains(&c)))
     }
 
     /// Check if this XML node constitutes text.
@@ -1203,7 +1215,7 @@ impl<'gc> XMLNode<'gc> {
         let children_len = children.len();
 
         match &*self.0.read() {
-            XMLNodeData::DocumentRoot { .. } => Ok(0),
+            XMLNodeData::DocumentRoot { .. } => Ok(()),
             XMLNodeData::Element {
                 tag_name,
                 attributes,
@@ -1250,7 +1262,7 @@ impl<'gc> XMLNode<'gc> {
         }
 
         match &*self.0.read() {
-            XMLNodeData::DocumentRoot { .. } => Ok(0),
+            XMLNodeData::DocumentRoot { .. } => Ok(()),
             XMLNodeData::Element { tag_name, .. } => {
                 if children_len > 0 {
                     let bs = match tag_name.node_name() {
@@ -1259,12 +1271,12 @@ impl<'gc> XMLNode<'gc> {
                     };
                     writer.write_event(&Event::End(bs))
                 } else {
-                    Ok(0)
+                    Ok(())
                 }
             }
-            XMLNodeData::Text { .. } => Ok(0),
-            XMLNodeData::Comment { .. } => Ok(0),
-            XMLNodeData::DocType { .. } => Ok(0),
+            XMLNodeData::Text { .. } => Ok(()),
+            XMLNodeData::Comment { .. } => Ok(()),
+            XMLNodeData::DocType { .. } => Ok(()),
         }?;
 
         Ok(())
